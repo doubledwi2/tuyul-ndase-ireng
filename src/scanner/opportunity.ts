@@ -119,6 +119,10 @@ function stateForValidObservation(count: number): OpportunityEvent['state'] {
 export class OpportunityTracker {
   private readonly activeEvents = new Map<string, TrackedOpportunity>();
 
+  getOpenEventCount(): number {
+    return this.activeEvents.size;
+  }
+
   process(
     comparison: SpreadComparison,
     timestamp: number,

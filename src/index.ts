@@ -1,10 +1,10 @@
+import { MarketPipeline } from './app/pipeline.js';
 import { connectBybit } from './exchanges/bybit.js';
 import { connectOkx } from './exchanges/okx.js';
-import { OpportunityMetrics } from './metrics/opportunity-metrics.js';
 import { EventRecorder } from './recording/event-recorder.js';
-import { compareQuotes } from './scanner/comparator.js';
-import { OpportunityTracker } from './scanner/opportunity.js';
+import { MarketRecorder } from './recording/market-recorder.js';
 import type { BestQuote, ExchangeConnection } from './types/market.js';
+import { isValidBestQuote } from './types/market.js';
 import {
   printComparisonSummary,
   printMetricsSummary,
@@ -13,13 +13,22 @@ import {
 
 const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;
-const latestQuotes = new Map<BestQuote['exchange'], BestQuote>();
-const opportunityTracker = new OpportunityTracker();
 const eventRecorder = new EventRecorder();
-const opportunityMetrics = new OpportunityMetrics();
+const marketRecorder = new MarketRecorder();
+const pipeline = new MarketPipeline({
+  eventRecorder,
+  onEvent: printOpportunityEvent,
+});
 
 function receiveQuote(quote: BestQuote): void {
-  latestQuotes.set(quote.exchange, quote);
+  if (!isValidBestQuote(quote)) {
+    console.warn(`[MARKET] Invalid ${quote.exchange} quote ignored.`);
+    return;
+  }
+
+  const recordedAt = Date.now();
+  pipeline.processQuote(quote, recordedAt);
+  void marketRecorder.record(quote, recordedAt);
 }
 
 const connections: ExchangeConnection[] = [
@@ -28,40 +37,18 @@ const connections: ExchangeConnection[] = [
 ];
 
 const outputTimer = setInterval(() => {
-  const bybitQuote = latestQuotes.get('bybit');
-  const okxQuote = latestQuotes.get('okx');
-  const comparisonTimestamp = Date.now();
-  const comparisons = compareQuotes(
-    bybitQuote,
-    okxQuote,
-    comparisonTimestamp,
-  );
-
-  if (
-    bybitQuote !== undefined &&
-    okxQuote !== undefined &&
-    comparisons !== null
-  ) {
-    printComparisonSummary(bybitQuote, okxQuote, comparisons);
-
-    for (const comparison of comparisons) {
-      const event = opportunityTracker.process(
-        comparison,
-        comparisonTimestamp,
-      );
-      if (event !== null) {
-        void eventRecorder.record(event, comparisonTimestamp);
-        if (event.state === 'DISAPPEARED') {
-          opportunityMetrics.recordCompleted(event);
-        }
-        printOpportunityEvent(event);
-      }
-    }
+  const snapshot = pipeline.getLatestSnapshot();
+  if (snapshot !== null) {
+    printComparisonSummary(
+      snapshot.bybitQuote,
+      snapshot.okxQuote,
+      snapshot.comparisons,
+    );
   }
 }, OUTPUT_INTERVAL_MS);
 
 const metricsTimer = setInterval(() => {
-  printMetricsSummary(opportunityMetrics.getSummary());
+  printMetricsSummary(pipeline.getMetricsSummary());
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
@@ -79,7 +66,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     connection.close();
   }
 
-  await eventRecorder.flush();
+  await Promise.all([marketRecorder.flush(), pipeline.flush()]);
   process.exit(0);
 }
 

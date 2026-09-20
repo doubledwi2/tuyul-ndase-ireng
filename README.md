@@ -1,8 +1,8 @@
 # tuyul-ndase-ireng
 
-Event Recorder + Metrics v0.1.4 adalah Phase 1.4 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, membandingkan top-of-book kedua exchange, melacak lifecycle candidate gross-spread, lalu merekam perubahan state dan menghitung statistik dasar.
+Raw Market Recorder + Replay Engine v0.1.5 adalah Phase 1.5 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, merekam quote normalized, membandingkan top-of-book kedua exchange, melacak lifecycle candidate gross-spread, dan dapat memutar ulang dataset melalui pipeline yang sama.
 
-Aplikasi ini tidak memakai API key atau autentikasi, tidak menyimpan data, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution.
+Aplikasi ini tidak memakai API key atau autentikasi, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution. Persistence hanya berupa file JSONL lokal untuk normalized market quote serta perubahan state opportunity; tidak ada database.
 
 ## Data source
 
@@ -73,6 +73,22 @@ spread <= 0         DISAPPEARED
 
 Selama event hidup, collector memperbarui current dan peak gross spread serta peak tradable size tanpa menjumlahkan size antar-tick. Lifetime baru dihitung ketika event menjadi `DISAPPEARED`. State `ACTIVE` tetap bukan jaminan bahwa candidate executable atau profitable.
 
+## Raw market recording
+
+Dalam live mode, setiap `BestQuote` valid dari kedua exchange disimpan secara append-only ke:
+
+```text
+data/market-quotes.jsonl
+```
+
+Satu baris berisi satu object JSON dengan format:
+
+```json
+{"recordedAt": 1700000000001, "quote": {"exchange": "bybit", "symbol": "BTC/USDT", "bid": 60000, "bidSize": 1.2, "ask": 60001, "askSize": 0.8, "exchangeTimestamp": 1700000000000, "matchingEngineTimestamp": 1699999999999, "receivedTimestamp": 1700000000000}}
+```
+
+Yang direkam adalah quote normalized, bukan raw WebSocket payload. Seluruh field `BestQuote` dipertahankan. `recordedAt` adalah waktu recorder menerima quote di pipeline live. Write diserialisasi untuk menjaga urutan, dan shutdown menunggu write yang masih pending.
+
 ## Event recording
 
 Setiap perubahan state event disimpan secara append-only ke:
@@ -84,6 +100,28 @@ data/opportunity-events.jsonl
 Format yang digunakan adalah JSON Lines: setiap baris merupakan satu object JSON valid berisi `recordedAt` dan snapshot lengkap `OpportunityEvent`. Urutan write diserialisasi agar sama dengan urutan event diterima. Record final `DISAPPEARED` menyimpan `endedAt`, `lifetimeMs`, peak spread, peak tradable size, dan flag historis.
 
 File runtime `data/*.jsonl` diabaikan Git. Jika penulisan gagal, recorder melaporkan error singkat tanpa menghentikan market feed atau comparator. Saat shutdown, aplikasi menunggu seluruh antrean write selesai sebelum keluar.
+
+## Replay
+
+Dataset raw dapat diputar ulang tanpa membuat koneksi WebSocket:
+
+```bash
+npm run replay -- --file data/market-quotes.jsonl --speed max
+```
+
+Pilihan speed:
+
+- `realtime`: memakai jeda `recordedAt` asli antar-record.
+- `fast`: mempercepat jeda sekitar 10x.
+- `max`: tanpa artificial delay, tetapi urutan file tetap dipertahankan.
+
+Default speed adalah `max`, dan default file adalah `data/market-quotes.jsonl`. Scheduling sengaja memakai `recordedAt`, bukan exchange timestamp, agar arrival sequence lokal dapat direproduksi. Blank line dilewati; record malformed atau invalid diberi warning dan dilewati tanpa menghentikan seluruh replay.
+
+Live dan replay memanggil `MarketPipeline` yang sama untuk update latest quote, comparison, opportunity lifecycle, event recording, dan metrics. Waktu logis pipeline saat replay juga menggunakan `recordedAt`, sehingga pilihan speed tidak mengubah hasil downstream untuk dataset dan konfigurasi yang sama. UUID event boleh berbeda antar-run.
+
+Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Perubahan state hasil replay ditulis terpisah ke `data/replay-opportunity-events.jsonl`, sehingga tidak tercampur diam-diam dengan `data/opportunity-events.jsonl`. Pada akhir file, event yang masih terbuka dilaporkan jumlahnya dan tidak dipaksa menjadi `DISAPPEARED`.
+
+Hasil replay masih berdasarkan gross spread top-of-book saja. Hasil tersebut bukan bukti profitability atau bahwa opportunity dapat dieksekusi; belum ada fee, slippage, maupun depth di luar best level.
 
 ## Opportunity metrics
 
@@ -120,6 +158,11 @@ npm run dev
 
 Hentikan aplikasi dengan `Ctrl+C`. Handler `SIGINT` dan `SIGTERM` akan menutup koneksi WebSocket.
 
+Pada live mode:
+
+- Raw normalized quote: `data/market-quotes.jsonl`
+- Opportunity state changes: `data/opportunity-events.jsonl`
+
 ## Typecheck dan build
 
 ```bash
@@ -141,6 +184,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 1.4
+## Scope Phase 1.5
 
-Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, perbandingan gross spread top-of-book, observasi lifecycle, persistence JSONL lokal, dan metrics dasar. Belum ada database, replay engine, REST API, dashboard, fee/slippage/net profit/PnL, paper trading, atau fitur eksekusi order.
+Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, perekaman dan replay quote, perbandingan gross spread top-of-book, observasi lifecycle, persistence JSONL lokal, dan metrics dasar. Belum ada database, REST API, dashboard, fee/slippage/net profit/PnL, paper trading, atau fitur eksekusi order.

@@ -1,0 +1,79 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+
+import type { MarketQuoteRecord } from '../recording/market-recorder.js';
+import type { OpportunityEvent } from '../scanner/opportunity.js';
+import type { BestQuote } from '../types/market.js';
+import { replayMarketData } from '../replay/replay-engine.js';
+import { MarketPipeline } from './pipeline.js';
+
+function quote(
+  exchange: BestQuote['exchange'],
+  bid: number,
+  ask: number,
+  timestamp: number,
+): BestQuote {
+  return {
+    exchange,
+    symbol: 'BTC/USDT',
+    bid,
+    bidSize: 2,
+    ask,
+    askSize: 1,
+    exchangeTimestamp: timestamp,
+    matchingEngineTimestamp: null,
+    receivedTimestamp: timestamp,
+  };
+}
+
+function comparableEvent(event: OpportunityEvent) {
+  const { id: _id, ...comparable } = event;
+  return comparable;
+}
+
+test('direct and replay pipelines produce equivalent opportunity transitions', async (context) => {
+  const records: MarketQuoteRecord[] = [
+    { recordedAt: 1_000, quote: quote('bybit', 101, 102, 1_000) },
+    { recordedAt: 1_010, quote: quote('okx', 99, 100, 1_010) },
+    { recordedAt: 1_020, quote: quote('bybit', 102, 103, 1_020) },
+    { recordedAt: 1_030, quote: quote('okx', 100, 101, 1_030) },
+    { recordedAt: 1_040, quote: quote('bybit', 99, 100, 1_040) },
+  ];
+  const directEvents: OpportunityEvent[] = [];
+  const direct = new MarketPipeline({ onEvent: (event) => directEvents.push(event) });
+  for (const record of records) {
+    direct.processQuote(record.quote, record.recordedAt);
+  }
+
+  const root = await mkdtemp(join(tmpdir(), 'pipeline-replay-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'quotes.jsonl');
+  await writeFile(
+    file,
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    'utf8',
+  );
+  const replayEvents: OpportunityEvent[] = [];
+  const replay = new MarketPipeline({ onEvent: (event) => replayEvents.push(event) });
+  await replayMarketData({
+    filePath: file,
+    speed: 'max',
+    onQuote: (value, recordedAt) => {
+      replay.processQuote(value, recordedAt);
+    },
+  });
+
+  assert.deepEqual(
+    directEvents.map((event) => event.state),
+    ['DETECTED', 'VALIDATING', 'ACTIVE', 'DISAPPEARED'],
+  );
+  assert.deepEqual(
+    replayEvents.map(comparableEvent),
+    directEvents.map(comparableEvent),
+  );
+  assert.deepEqual(replay.getMetricsSummary(), direct.getMetricsSummary());
+  assert.equal(replay.getOpenEventCount(), 0);
+});
