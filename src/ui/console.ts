@@ -238,6 +238,8 @@ export function printDepthComparisonSummary(
             `- source clock estimator warming up; requires ` +
               `${timingConfig.minOffsetSamples} samples per available source`,
           );
+        } else if (reason === 'SOURCE_CLOCK_UNAVAILABLE') {
+          console.log('- source clock diagnostic unavailable');
         } else {
           console.log(`- ${reason}`);
         }
@@ -419,9 +421,10 @@ export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
       `${summary.timestampAnomalyCount}`,
   );
   console.log(
-    `Source clock warming-up/deviation-high: ` +
+    `Source clock warming-up/deviation-high/unavailable: ` +
       `${summary.sourceClockWarmingUpCount} / ` +
-      `${summary.sourceOffsetDeviationHighCount}`,
+      `${summary.sourceOffsetDeviationHighCount} / ` +
+      `${summary.sourceClockUnavailableCount}`,
   );
   console.log('');
   console.log(`Completed events: ${summary.totalCompletedEvents}`);

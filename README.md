@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Clock Offset Baseline & Sync Model Correction v0.2.4 adalah corrective hardening Phase 2.3.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, mensimulasikan hypothetical taker execution, lalu menilai economics, timing health, dan kualitas candidate secara terpisah.
+Final Timing Guard v0.2.5 adalah corrective hardening Phase 2.3.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, mensimulasikan hypothetical taker execution, lalu menilai economics, timing health, dan kualitas candidate secara terpisah.
 
 Aplikasi ini tidak memakai API key atau autentikasi dan tidak melakukan trading maupun order execution. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill. Persistence hanya berupa file JSONL lokal; tidak ada database.
 
@@ -113,9 +113,9 @@ MAX_OFFSET_DEVIATION_MS = 100
 
 Estimator terpisah untuk Bybit dan OKX menyimpan 200 observed-ingress terbaru dan memakai rolling median sebagai baseline setelah warm-up 30 sampel. `observedIngressDeviationMs` adalah raw observed ingress dikurangi baseline tersebut. Sebelum warm-up selesai statusnya `WARMING_UP`; deviasi absolut di atas 100 ms menjadi `DEVIATION_HIGH`. Rolling median ini hanya offset diagnostic yang robust terhadap spike—bukan koreksi network latency, bukan kompensasi timestamp, dan tidak mengubah timestamp exchange.
 
-`SYNC_HEALTHY` memerlukan host clock tidak berstatus `CLOCK_JUMP_DETECTED`, estimator source yang tersedia sudah stable, receive skew dan book age di bawah batas, source timestamp skew di bawah batas jika kedua exchange menyediakannya, tidak ada source-offset deviation tinggi, serta tidak ada self-consistency anomaly seperti negative local book age atau timestamp non-finite. Raw source-vs-host offset negatif tidak termasuk anomaly.
+`SYNC_HEALTHY` memerlukan source clock diagnostic berstatus `STABLE` untuk **kedua** exchange, host clock tidak berstatus `CLOCK_JUMP_DETECTED`, receive skew dan book age di bawah batas, source timestamp skew di bawah batas, tidak ada source-offset deviation tinggi, serta tidak ada self-consistency anomaly seperti negative local book age atau timestamp non-finite. Raw source-vs-host offset negatif tidak termasuk anomaly.
 
-Primary sync status adalah `SYNC_HEALTHY`, `SYNC_WARMING_UP`, `SOURCE_OFFSET_DEVIATION_HIGH`, `RECEIVE_SKEW_HIGH`, `SOURCE_SKEW_HIGH`, `BOOK_TOO_OLD`, `CLOCK_UNHEALTHY`, atau `TIMESTAMP_ANOMALY`. Array `reasons` mempertahankan seluruh kegagalan sekaligus. Jika source timestamp tidak tersedia, estimator melaporkan `UNAVAILABLE` tanpa mengarang nilai. Cross-exchange source skew tetap merupakan sanity check antar-source clock, bukan bukti sinkronisasi absolut. Karena OKX `books` tidak menyediakan matching-engine timestamp ekuivalen Bybit `cts`, `matchingEngineSkewMs` tetap `null`.
+Primary sync status adalah `SYNC_HEALTHY`, `SYNC_WARMING_UP`, `SOURCE_CLOCK_UNAVAILABLE`, `SOURCE_OFFSET_DEVIATION_HIGH`, `RECEIVE_SKEW_HIGH`, `SOURCE_SKEW_HIGH`, `BOOK_TOO_OLD`, `CLOCK_UNHEALTHY`, atau `TIMESTAMP_ANOMALY`. Array `reasons` mempertahankan seluruh kegagalan sekaligus. Jika source timestamp salah satu exchange tidak tersedia, estimator melaporkan `UNAVAILABLE` tanpa mengarang nilai dan sync reason menjadi `SOURCE_CLOCK_UNAVAILABLE`. Ini tidak berarti market data exchange rusak; timing quality-nya belum cukup untuk qualification. Cross-exchange source skew tetap merupakan sanity check antar-source clock, bukan bukti sinkronisasi absolut. Karena OKX `books` tidak menyediakan matching-engine timestamp ekuivalen Bybit `cts`, `matchingEngineSkewMs` tetap `null`.
 
 `ClockHealthMonitor` membandingkan `wallDelta - monotonicDelta`. Sampel pertama `WARMING_UP`; drift mendadak di atas 50 ms menjadi `CLOCK_JUMP_DETECTED`. Local clock-jump detection ini terpisah dari source-vs-host offset estimator. Keduanya hanya mendeteksi dan melaporkan—tidak mengubah clock OS, exchange timestamp, atau economic ordering. Infrastruktur VPS/NTP/chrony yang lebih ketat berada di roadmap Phase 4.
 
@@ -254,7 +254,7 @@ Session metrics comparison depth mencakup:
 - Source timestamp skew: average, P95, P99.
 - Max book age: P50, P95, P99.
 - Live monotonic processing duration: average, P50, P95, P99, maksimum.
-- Count sync healthy, source-clock warm-up/deviation tinggi, receive/source skew high, book too old, clock unhealthy, dan timestamp anomaly.
+- Count sync healthy, source-clock warm-up/deviation tinggi/unavailable, receive/source skew high, book too old, clock unhealthy, dan timestamp anomaly.
 
 Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
@@ -327,8 +327,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 2.1 depth/slippage: complete.
 - Phase 2.2 opportunity quality: complete.
 - Phase 2.3 latency, clock health, dan synchronization: complete.
-- Phase 2.3.1 clock-offset baseline correction: complete/current.
+- Phase 2.3.1 clock-offset baseline correction: complete.
+- Phase 2.3.2 final timing guard: complete/current.
 
-## Scope Phase 2.3.1
+## Scope Phase 2.3.2
 
 Scope versi ini terbatas pada timing diagnostics, clock-jump detection, explicit synchronization assessment, public multi-level order book, hypothetical execution, quality filtering, replay, dan metrics. Tidak ada ping/RTT palsu, timestamp compensation, real order execution, balance, transfer, private API, database, dashboard, atau paper trading.

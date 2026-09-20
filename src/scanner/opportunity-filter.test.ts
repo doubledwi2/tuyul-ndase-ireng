@@ -144,3 +144,27 @@ test('does not qualify a candidate while source clocks are warming up', () => {
   assert.equal(result.syncOk, false);
   assert.deepEqual(result.reasons, ['STALE']);
 });
+
+test('does not qualify a candidate with unavailable source clock timing', () => {
+  const unavailable = warmingSyncAssessment();
+  unavailable.status = 'SOURCE_CLOCK_UNAVAILABLE';
+  unavailable.reasons = ['SOURCE_CLOCK_UNAVAILABLE'];
+  unavailable.bybitSourceClock = {
+    rawObservedIngressMs: null,
+    baselineObservedIngressMs: null,
+    observedIngressDeviationMs: null,
+    offsetSampleCount: 0,
+    offsetStatus: 'UNAVAILABLE',
+  };
+  unavailable.okxSourceClock = {
+    ...unavailable.bybitSourceClock,
+  };
+  const result = qualifyOpportunity(
+    comparison(),
+    OPPORTUNITY_QUALITY_CONFIG,
+    unavailable,
+  );
+  assert.equal(result.qualified, false);
+  assert.equal(result.syncOk, false);
+  assert.deepEqual(result.reasons, ['STALE']);
+});

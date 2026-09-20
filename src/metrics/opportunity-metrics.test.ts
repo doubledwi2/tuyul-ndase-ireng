@@ -175,6 +175,7 @@ test('empty metrics are zero and null safe', () => {
   assert.equal(summary.averagePeakNetPnlAbsolute, null);
   assert.equal(summary.p95ReceiveSkewMs, null);
   assert.equal(summary.syncHealthyCount, 0);
+  assert.equal(summary.sourceClockUnavailableCount, 0);
 });
 
 test('counts completed events and ignores incomplete events', () => {
@@ -338,14 +339,21 @@ test('aggregates timing distributions and sync reason counts', () => {
   metrics.recordTiming(syncAssessment(20), 0.2, 'okx');
   metrics.recordTiming(
     syncAssessment(30, {
-      status: 'SYNC_WARMING_UP',
-      reasons: ['SYNC_WARMING_UP'],
+      status: 'SOURCE_CLOCK_UNAVAILABLE',
+      reasons: ['SOURCE_CLOCK_UNAVAILABLE', 'SYNC_WARMING_UP'],
       bybitSourceClock: {
         rawObservedIngressMs: 10,
         baselineObservedIngressMs: 9,
         observedIngressDeviationMs: 1,
         offsetSampleCount: 2,
         offsetStatus: 'WARMING_UP',
+      },
+      okxSourceClock: {
+        rawObservedIngressMs: null,
+        baselineObservedIngressMs: null,
+        observedIngressDeviationMs: null,
+        offsetSampleCount: 0,
+        offsetStatus: 'UNAVAILABLE',
       },
     }),
     0.3,
@@ -389,6 +397,7 @@ test('aggregates timing distributions and sync reason counts', () => {
   assert.equal(summary.okxMaxAbsoluteOffsetDeviationMs, 240);
   assert.equal(summary.sourceClockWarmingUpCount, 1);
   assert.equal(summary.sourceOffsetDeviationHighCount, 1);
+  assert.equal(summary.sourceClockUnavailableCount, 1);
   assert.equal(summary.p95ProcessingDurationMs, 0.4);
   assert.equal(summary.maxProcessingDurationMs, 0.4);
 });

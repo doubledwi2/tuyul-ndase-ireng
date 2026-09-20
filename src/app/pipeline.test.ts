@@ -306,6 +306,44 @@ test('replay source-clock baseline is deterministic and host-time independent', 
   );
 });
 
+test('replay without source timestamps is deterministic and explicitly unavailable', async (context) => {
+  const records: OrderBookRecord[] = [
+    {
+      recordedAt: 8_000,
+      orderBook: { ...orderBook('bybit', 99, 100, 8_000), exchangeTimestamp: null },
+    },
+    {
+      recordedAt: 8_010,
+      orderBook: { ...orderBook('okx', 102, 103, 8_010), exchangeTimestamp: null },
+    },
+  ];
+  const root = await mkdtemp(join(tmpdir(), 'pipeline-unavailable-replay-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'orderbooks.jsonl');
+  await writeFile(
+    file,
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    'utf8',
+  );
+  const first = new MarketPipeline({ timingConfig: TEST_TIMING_CONFIG });
+  const second = new MarketPipeline({ timingConfig: TEST_TIMING_CONFIG });
+  for (const pipeline of [first, second]) {
+    await replayOrderBooks({
+      filePath: file,
+      speed: 'max',
+      onOrderBook: (value, recordedAt) => {
+        pipeline.processOrderBook(value, recordedAt);
+      },
+    });
+  }
+
+  const firstAssessment = first.getLatestDepthSnapshot()?.syncAssessment;
+  const secondAssessment = second.getLatestDepthSnapshot()?.syncAssessment;
+  assert.deepEqual(firstAssessment, secondAssessment);
+  assert.equal(firstAssessment?.status, 'SOURCE_CLOCK_UNAVAILABLE');
+  assert.deepEqual(firstAssessment?.reasons, ['SOURCE_CLOCK_UNAVAILABLE']);
+});
+
 test('replay quality config override can change qualification result', async (context) => {
   const records: OrderBookRecord[] = [
     { recordedAt: 4_000, orderBook: orderBook('bybit', 99, 100, 4_000) },

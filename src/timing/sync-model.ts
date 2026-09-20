@@ -18,7 +18,8 @@ export type SyncStatus =
   | 'CLOCK_UNHEALTHY'
   | 'TIMESTAMP_ANOMALY'
   | 'SYNC_WARMING_UP'
-  | 'SOURCE_OFFSET_DEVIATION_HIGH';
+  | 'SOURCE_OFFSET_DEVIATION_HIGH'
+  | 'SOURCE_CLOCK_UNAVAILABLE';
 
 export type SyncReason = Exclude<SyncStatus, 'SYNC_HEALTHY'>;
 
@@ -166,6 +167,12 @@ export function assessSynchronization(
     sourceClocks.okx.offsetStatus === 'DEVIATION_HIGH'
   ) {
     reasons.push('SOURCE_OFFSET_DEVIATION_HIGH');
+  }
+  if (
+    sourceClocks.bybit.offsetStatus === 'UNAVAILABLE' ||
+    sourceClocks.okx.offsetStatus === 'UNAVAILABLE'
+  ) {
+    reasons.push('SOURCE_CLOCK_UNAVAILABLE');
   }
   if (
     sourceClocks.bybit.offsetStatus === 'WARMING_UP' ||

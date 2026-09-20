@@ -65,6 +65,7 @@ export interface OpportunityMetricsSummary {
   timestampAnomalyCount: number;
   sourceClockWarmingUpCount: number;
   sourceOffsetDeviationHighCount: number;
+  sourceClockUnavailableCount: number;
   totalCompletedEvents: number;
   eventsEverActive: number;
   eventsNeverActive: number;
@@ -153,6 +154,7 @@ export class OpportunityMetrics {
   private timestampAnomalyCount = 0;
   private sourceClockWarmingUpCount = 0;
   private sourceOffsetDeviationHighCount = 0;
+  private sourceClockUnavailableCount = 0;
   private totalCompletedEvents = 0;
   private eventsEverActive = 0;
   private invalidSyncEvents = 0;
@@ -300,6 +302,9 @@ export class OpportunityMetrics {
     if (assessment.reasons.includes('SOURCE_OFFSET_DEVIATION_HIGH')) {
       this.sourceOffsetDeviationHighCount += 1;
     }
+    if (assessment.reasons.includes('SOURCE_CLOCK_UNAVAILABLE')) {
+      this.sourceClockUnavailableCount += 1;
+    }
   }
 
   getSummary(): OpportunityMetricsSummary {
@@ -419,6 +424,7 @@ export class OpportunityMetrics {
       timestampAnomalyCount: this.timestampAnomalyCount,
       sourceClockWarmingUpCount: this.sourceClockWarmingUpCount,
       sourceOffsetDeviationHighCount: this.sourceOffsetDeviationHighCount,
+      sourceClockUnavailableCount: this.sourceClockUnavailableCount,
       totalCompletedEvents: this.totalCompletedEvents,
       eventsEverActive: this.eventsEverActive,
       eventsNeverActive: this.totalCompletedEvents - this.eventsEverActive,

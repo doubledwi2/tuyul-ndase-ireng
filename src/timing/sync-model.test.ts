@@ -28,6 +28,15 @@ function sourceClock(
   rawObservedIngressMs: number,
   offsetStatus: SourceClockOffsetDiagnostic['offsetStatus'] = 'STABLE',
 ): SourceClockOffsetDiagnostic {
+  if (offsetStatus === 'UNAVAILABLE') {
+    return {
+      rawObservedIngressMs: null,
+      baselineObservedIngressMs: null,
+      observedIngressDeviationMs: null,
+      offsetSampleCount: 0,
+      offsetStatus,
+    };
+  }
   return {
     rawObservedIngressMs,
     baselineObservedIngressMs: -120,
@@ -72,6 +81,7 @@ test('healthy market timing produces SYNC_HEALTHY', () => {
     NOW,
     DETERMINISTIC_HEALTHY_CLOCK,
     CONFIG,
+    sourceClocks(),
   );
   assert.equal(result.status, 'SYNC_HEALTHY');
   assert.deepEqual(result.reasons, []);
@@ -102,16 +112,73 @@ test('high source timestamp skew is rejected', () => {
   assert.equal(result.sourceTimestampSkewMs, 290);
 });
 
-test('one null source timestamp skips source skew honestly', () => {
+test('one null source timestamp is unavailable and skips source skew honestly', () => {
   const result = assessSynchronization(
     book('bybit', NOW, NOW - 10),
     book('okx', NOW, null),
     NOW,
     DETERMINISTIC_HEALTHY_CLOCK,
     CONFIG,
+    sourceClocks('STABLE', 'UNAVAILABLE'),
   );
   assert.equal(result.sourceTimestampSkewMs, null);
-  assert.equal(result.status, 'SYNC_HEALTHY');
+  assert.equal(result.status, 'SOURCE_CLOCK_UNAVAILABLE');
+  assert.deepEqual(result.reasons, ['SOURCE_CLOCK_UNAVAILABLE']);
+});
+
+test('Bybit unavailable source clock blocks healthy sync', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, null),
+    book('okx', NOW, NOW - 10),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks('UNAVAILABLE', 'STABLE'),
+  );
+  assert.equal(result.status, 'SOURCE_CLOCK_UNAVAILABLE');
+  assert.deepEqual(result.reasons, ['SOURCE_CLOCK_UNAVAILABLE']);
+});
+
+test('OKX unavailable source clock blocks healthy sync', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, NOW - 10),
+    book('okx', NOW, null),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks('STABLE', 'UNAVAILABLE'),
+  );
+  assert.equal(result.status, 'SOURCE_CLOCK_UNAVAILABLE');
+  assert.deepEqual(result.reasons, ['SOURCE_CLOCK_UNAVAILABLE']);
+});
+
+test('both unavailable source clocks produce one explicit reason', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, null),
+    book('okx', NOW, null),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks('UNAVAILABLE', 'UNAVAILABLE'),
+  );
+  assert.equal(result.status, 'SOURCE_CLOCK_UNAVAILABLE');
+  assert.deepEqual(result.reasons, ['SOURCE_CLOCK_UNAVAILABLE']);
+});
+
+test('unavailable source clock preserves receive skew failure reason', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, null),
+    book('okx', NOW - 101, NOW - 111),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks('UNAVAILABLE', 'STABLE'),
+  );
+  assert.equal(result.status, 'RECEIVE_SKEW_HIGH');
+  assert.deepEqual(result.reasons, [
+    'RECEIVE_SKEW_HIGH',
+    'SOURCE_CLOCK_UNAVAILABLE',
+  ]);
 });
 
 test('old book produces BOOK_TOO_OLD', () => {
