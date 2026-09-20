@@ -1,6 +1,11 @@
-import WebSocket, { type RawData } from 'ws';
+import WebSocket from 'ws';
 
-import type { BestQuote, ExchangeConnection, QuoteHandler } from '../types/market.js';
+import {
+  isValidBestQuote,
+  type BestQuote,
+  type ExchangeConnection,
+  type QuoteHandler,
+} from '../types/market.js';
 
 const URL = 'wss://stream.bybit.com/v5/public/spot';
 const TOPIC = 'orderbook.1.BTCUSDT';
@@ -10,6 +15,7 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 interface BybitOrderbookMessage {
   topic: string;
   ts?: unknown;
+  cts?: unknown;
   data: {
     s: string;
     b: unknown;
@@ -29,18 +35,29 @@ function isOrderbookMessage(value: unknown): value is BybitOrderbookMessage {
   return value.data.s === 'BTCUSDT';
 }
 
-function firstPrice(levels: unknown): number | null {
+interface PriceLevel {
+  price: number;
+  size: number;
+}
+
+function firstLevel(levels: unknown): PriceLevel | null {
   if (!Array.isArray(levels) || !Array.isArray(levels[0])) {
     return null;
   }
 
-  const value = levels[0][0];
-  if (typeof value !== 'string' && typeof value !== 'number') {
+  const priceValue = levels[0][0];
+  const sizeValue = levels[0][1];
+  if (
+    (typeof priceValue !== 'string' && typeof priceValue !== 'number') ||
+    (typeof sizeValue !== 'string' && typeof sizeValue !== 'number')
+  ) {
     return null;
   }
 
-  const price = Number(value);
-  return Number.isFinite(price) && price > 0 ? price : null;
+  return {
+    price: Number(priceValue),
+    size: Number(sizeValue),
+  };
 }
 
 function timestamp(value: unknown): number | null {
@@ -52,11 +69,14 @@ function timestamp(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function parseQuote(data: RawData, receivedTimestamp: number): BestQuote | null {
+export function parseBybitMessage(
+  payload: string,
+  receivedTimestamp: number,
+): BestQuote | null {
   let message: unknown;
 
   try {
-    message = JSON.parse(data.toString());
+    message = JSON.parse(payload);
   } catch {
     return null;
   }
@@ -75,20 +95,25 @@ function parseQuote(data: RawData, receivedTimestamp: number): BestQuote | null 
     return null;
   }
 
-  const bid = firstPrice(message.data.b);
-  const ask = firstPrice(message.data.a);
+  const bid = firstLevel(message.data.b);
+  const ask = firstLevel(message.data.a);
   if (bid === null || ask === null) {
     return null;
   }
 
-  return {
+  const quote: BestQuote = {
     exchange: 'bybit',
     symbol: 'BTC/USDT',
-    bid,
-    ask,
+    bid: bid.price,
+    bidSize: bid.size,
+    ask: ask.price,
+    askSize: ask.size,
     exchangeTimestamp: timestamp(message.ts),
+    matchingEngineTimestamp: timestamp(message.cts),
     receivedTimestamp,
   };
+
+  return isValidBestQuote(quote) ? quote : null;
 }
 
 export function connectBybit(onQuote: QuoteHandler): ExchangeConnection {
@@ -136,7 +161,7 @@ export function connectBybit(onQuote: QuoteHandler): ExchangeConnection {
 
       socket.on('message', (data) => {
         const receivedTimestamp = Date.now();
-        const quote = parseQuote(data, receivedTimestamp);
+        const quote = parseBybitMessage(data.toString(), receivedTimestamp);
         if (quote !== null) {
           onQuote(quote);
         }

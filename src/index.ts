@@ -18,9 +18,16 @@ function formatTimestamp(value: number | null): string {
 function printQuote(quote: BestQuote): void {
   console.log(`\n[${quote.exchange.toUpperCase()}] ${quote.symbol}`);
   console.log(`Bid: ${quote.bid}`);
+  console.log(`Bid size: ${quote.bidSize}`);
+  console.log('');
   console.log(`Ask: ${quote.ask}`);
-  console.log(`Exchange time: ${formatTimestamp(quote.exchangeTimestamp)}`);
-  console.log(`Received time: ${formatTimestamp(quote.receivedTimestamp)}`);
+  console.log(`Ask size: ${quote.askSize}`);
+  console.log('');
+  console.log(`Exchange timestamp: ${formatTimestamp(quote.exchangeTimestamp)}`);
+  console.log(
+    `Matching engine timestamp: ${formatTimestamp(quote.matchingEngineTimestamp)}`,
+  );
+  console.log(`Received timestamp: ${formatTimestamp(quote.receivedTimestamp)}`);
 }
 
 const connections: ExchangeConnection[] = [
