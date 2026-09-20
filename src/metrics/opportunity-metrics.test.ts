@@ -138,6 +138,20 @@ function syncAssessment(
     okxObservedIngressMs: 20,
     bybitObservedMatchingEngineIngressMs: 11,
     okxObservedMatchingEngineIngressMs: null,
+    bybitSourceClock: {
+      rawObservedIngressMs: 10,
+      baselineObservedIngressMs: 8,
+      observedIngressDeviationMs: 2,
+      offsetSampleCount: 30,
+      offsetStatus: 'STABLE',
+    },
+    okxSourceClock: {
+      rawObservedIngressMs: 20,
+      baselineObservedIngressMs: 18,
+      observedIngressDeviationMs: 2,
+      offsetSampleCount: 30,
+      offsetStatus: 'STABLE',
+    },
     clockHealth: DETERMINISTIC_HEALTHY_CLOCK,
     reasons: [],
     ...overrides,
@@ -322,12 +336,37 @@ test('aggregates timing distributions and sync reason counts', () => {
   const metrics = new OpportunityMetrics();
   metrics.recordTiming(syncAssessment(10), 0.1, 'bybit');
   metrics.recordTiming(syncAssessment(20), 0.2, 'okx');
-  metrics.recordTiming(syncAssessment(30), 0.3, 'bybit');
+  metrics.recordTiming(
+    syncAssessment(30, {
+      status: 'SYNC_WARMING_UP',
+      reasons: ['SYNC_WARMING_UP'],
+      bybitSourceClock: {
+        rawObservedIngressMs: 10,
+        baselineObservedIngressMs: 9,
+        observedIngressDeviationMs: 1,
+        offsetSampleCount: 2,
+        offsetStatus: 'WARMING_UP',
+      },
+    }),
+    0.3,
+    'bybit',
+  );
   metrics.recordTiming(
     syncAssessment(120, {
       status: 'RECEIVE_SKEW_HIGH',
       maxBookAgeMs: 600,
-      reasons: ['RECEIVE_SKEW_HIGH', 'BOOK_TOO_OLD'],
+      reasons: [
+        'RECEIVE_SKEW_HIGH',
+        'BOOK_TOO_OLD',
+        'SOURCE_OFFSET_DEVIATION_HIGH',
+      ],
+      okxSourceClock: {
+        rawObservedIngressMs: 120,
+        baselineObservedIngressMs: -120,
+        observedIngressDeviationMs: 240,
+        offsetSampleCount: 40,
+        offsetStatus: 'DEVIATION_HIGH',
+      },
     }),
     0.4,
     'okx',
@@ -335,7 +374,7 @@ test('aggregates timing distributions and sync reason counts', () => {
 
   const summary = metrics.getSummary();
   assert.equal(summary.timingAssessmentsTotal, 4);
-  assert.equal(summary.syncHealthyCount, 3);
+  assert.equal(summary.syncHealthyCount, 2);
   assert.equal(summary.receiveSkewHighCount, 1);
   assert.equal(summary.bookTooOldCount, 1);
   assert.equal(summary.p50ReceiveSkewMs, 20);
@@ -344,6 +383,12 @@ test('aggregates timing distributions and sync reason counts', () => {
   assert.equal(summary.maxReceiveSkewMs, 120);
   assert.equal(summary.bybitAverageObservedIngressMs, 10);
   assert.equal(summary.okxAverageObservedIngressMs, 20);
+  assert.equal(summary.bybitObservedIngressBaselineMs, 9);
+  assert.equal(summary.bybitP95AbsoluteOffsetDeviationMs, 2);
+  assert.equal(summary.okxObservedIngressBaselineMs, -120);
+  assert.equal(summary.okxMaxAbsoluteOffsetDeviationMs, 240);
+  assert.equal(summary.sourceClockWarmingUpCount, 1);
+  assert.equal(summary.sourceOffsetDeviationHighCount, 1);
   assert.equal(summary.p95ProcessingDurationMs, 0.4);
   assert.equal(summary.maxProcessingDurationMs, 0.4);
 });

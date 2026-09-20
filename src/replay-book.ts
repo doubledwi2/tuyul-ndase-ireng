@@ -30,6 +30,14 @@ function nonNegativeNumber(option: string, value: string | undefined): number {
   return parsed;
 }
 
+function positiveInteger(option: string, value: string | undefined): number {
+  const parsed = nonNegativeNumber(option, value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${option} requires a positive integer.`);
+  }
+  return parsed;
+}
+
 function parseArguments(args: readonly string[]): ReplayArguments {
   let filePath = DEFAULT_ORDERBOOK_RECORD_PATH;
   let speed: ReplaySpeed = 'max';
@@ -94,6 +102,21 @@ function parseArguments(args: readonly string[]): ReplayArguments {
       index += 1;
       continue;
     }
+    if (argument === '--min-offset-samples') {
+      timingConfig.minOffsetSamples = positiveInteger(argument, value);
+      index += 1;
+      continue;
+    }
+    if (argument === '--offset-window-size') {
+      timingConfig.offsetWindowSize = positiveInteger(argument, value);
+      index += 1;
+      continue;
+    }
+    if (argument === '--max-offset-deviation') {
+      timingConfig.maxOffsetDeviationMs = nonNegativeNumber(argument, value);
+      index += 1;
+      continue;
+    }
     throw new Error(
       `Invalid argument: ${argument ?? '(missing)'}. ` +
         'Use --file <path>, --speed realtime|fast|max, and optional quality overrides.',
@@ -124,7 +147,10 @@ async function main(): Promise<void> {
   console.log(
     `[BOOK REPLAY] Timing: receive skew<=${timingConfig.maxReceiveSkewMs} ms, ` +
       `book age<=${timingConfig.maxBookAgeMs} ms, ` +
-      `source skew<=${timingConfig.maxSourceTimestampSkewMs} ms`,
+      `source skew<=${timingConfig.maxSourceTimestampSkewMs} ms, ` +
+      `offset warm-up=${timingConfig.minOffsetSamples}, ` +
+      `offset window=${timingConfig.offsetWindowSize}, ` +
+      `offset deviation<=${timingConfig.maxOffsetDeviationMs} ms`,
   );
   const result = await replayOrderBooks({
     filePath,

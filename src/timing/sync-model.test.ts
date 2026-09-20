@@ -7,7 +7,11 @@ import {
   DETERMINISTIC_HEALTHY_CLOCK,
   type ClockHealth,
 } from './clock-health.js';
-import { assessSynchronization } from './sync-model.js';
+import type { SourceClockOffsetDiagnostic } from './source-clock-offset.js';
+import {
+  assessSynchronization,
+  type SourceClockAssessments,
+} from './sync-model.js';
 
 const NOW = 10_000;
 const CONFIG: TimingConfig = {
@@ -15,7 +19,33 @@ const CONFIG: TimingConfig = {
   maxBookAgeMs: 500,
   maxSourceTimestampSkewMs: 250,
   clockJumpThresholdMs: 50,
+  minOffsetSamples: 30,
+  offsetWindowSize: 200,
+  maxOffsetDeviationMs: 100,
 };
+
+function sourceClock(
+  rawObservedIngressMs: number,
+  offsetStatus: SourceClockOffsetDiagnostic['offsetStatus'] = 'STABLE',
+): SourceClockOffsetDiagnostic {
+  return {
+    rawObservedIngressMs,
+    baselineObservedIngressMs: -120,
+    observedIngressDeviationMs: rawObservedIngressMs + 120,
+    offsetSampleCount: 30,
+    offsetStatus,
+  };
+}
+
+function sourceClocks(
+  bybitStatus: SourceClockOffsetDiagnostic['offsetStatus'] = 'STABLE',
+  okxStatus: SourceClockOffsetDiagnostic['offsetStatus'] = 'STABLE',
+): SourceClockAssessments {
+  return {
+    bybit: sourceClock(-120, bybitStatus),
+    okx: sourceClock(-127, okxStatus),
+  };
+}
 
 function book(
   exchange: 'bybit' | 'okx',
@@ -106,16 +136,84 @@ test('negative book age produces TIMESTAMP_ANOMALY', () => {
   assert.equal(result.status, 'TIMESTAMP_ANOMALY');
 });
 
-test('negative observed ingress is preserved and flagged as anomaly', () => {
+test('non-finite source timestamp is a fatal self-consistency anomaly', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, Number.NaN),
+    book('okx', NOW, NOW - 10),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+  );
+  assert.equal(result.status, 'TIMESTAMP_ANOMALY');
+  assert.equal(result.bybitObservedIngressMs, null);
+  assert.equal(result.sourceTimestampSkewMs, null);
+});
+
+test('impossible local monotonic timestamp is an anomaly', () => {
+  const bybit = book('bybit', NOW, NOW - 10);
+  bybit.receivedMonotonicMs = -1;
+  const result = assessSynchronization(
+    bybit,
+    book('okx', NOW, NOW - 10),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+  );
+  assert.equal(result.status, 'TIMESTAMP_ANOMALY');
+});
+
+test('raw negative ingress alone is preserved and is not an anomaly', () => {
   const result = assessSynchronization(
     book('bybit', NOW, NOW + 5),
     book('okx', NOW, NOW - 5),
     NOW,
     DETERMINISTIC_HEALTHY_CLOCK,
     CONFIG,
+    sourceClocks(),
   );
   assert.equal(result.bybitObservedIngressMs, -5);
-  assert.equal(result.status, 'TIMESTAMP_ANOMALY');
+  assert.equal(result.status, 'SYNC_HEALTHY');
+  assert.ok(!result.reasons.includes('TIMESTAMP_ANOMALY'));
+});
+
+test('-120 ms stable ingress can become healthy after offset warm-up', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, NOW + 120),
+    book('okx', NOW, NOW + 127),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks(),
+  );
+  assert.equal(result.bybitSourceClock.offsetStatus, 'STABLE');
+  assert.equal(result.okxSourceClock.offsetStatus, 'STABLE');
+  assert.equal(result.status, 'SYNC_HEALTHY');
+});
+
+test('source offset warm-up does not qualify as healthy', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, NOW + 120),
+    book('okx', NOW, NOW + 127),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks('WARMING_UP', 'STABLE'),
+  );
+  assert.equal(result.status, 'SYNC_WARMING_UP');
+  assert.deepEqual(result.reasons, ['SYNC_WARMING_UP']);
+});
+
+test('source offset deviation blocks healthy sync', () => {
+  const result = assessSynchronization(
+    book('bybit', NOW, NOW - 5),
+    book('okx', NOW, NOW - 5),
+    NOW,
+    DETERMINISTIC_HEALTHY_CLOCK,
+    CONFIG,
+    sourceClocks('DEVIATION_HIGH', 'STABLE'),
+  );
+  assert.equal(result.status, 'SOURCE_OFFSET_DEVIATION_HIGH');
+  assert.ok(result.reasons.includes('SOURCE_OFFSET_DEVIATION_HIGH'));
 });
 
 test('unhealthy host clock overrides otherwise healthy timing', () => {
@@ -148,6 +246,7 @@ test('multiple timing failure reasons are preserved', () => {
     NOW,
     unhealthy,
     CONFIG,
+    sourceClocks('DEVIATION_HIGH', 'WARMING_UP'),
   );
   assert.deepEqual(result.reasons, [
     'TIMESTAMP_ANOMALY',
@@ -155,6 +254,8 @@ test('multiple timing failure reasons are preserved', () => {
     'RECEIVE_SKEW_HIGH',
     'SOURCE_SKEW_HIGH',
     'BOOK_TOO_OLD',
+    'SOURCE_OFFSET_DEVIATION_HIGH',
+    'SYNC_WARMING_UP',
   ]);
 });
 

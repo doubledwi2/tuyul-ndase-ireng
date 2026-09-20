@@ -1,8 +1,8 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
-  "description": "Depth-aware BTC/USDT analyzer with explicit timing diagnostics",
+  "description": "Depth-aware BTC/USDT analyzer with source clock offset diagnostics",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",

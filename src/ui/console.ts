@@ -98,6 +98,28 @@ function passFail(value: boolean): string {
   return value ? 'PASS' : 'FAIL';
 }
 
+function printSourceClock(
+  label: string,
+  sourceClock: SyncAssessment['bybitSourceClock'],
+): void {
+  console.log(`${label} SOURCE CLOCK`);
+  console.log(
+    `Raw observed ingress: ${sourceClock.rawObservedIngressMs ?? 'N/A'} ms`,
+  );
+  console.log(
+    `Baseline: ${sourceClock.baselineObservedIngressMs ?? 'N/A'} ms`,
+  );
+  console.log(
+    `Deviation: ${optionalSigned(
+      sourceClock.observedIngressDeviationMs,
+      2,
+      ' ms',
+    )}`,
+  );
+  console.log(`Samples: ${sourceClock.offsetSampleCount}`);
+  console.log(`Status: ${sourceClock.offsetStatus}`);
+}
+
 function printQuality(
   comparison: DepthComparison,
   qualification: OpportunityQualification,
@@ -181,10 +203,10 @@ export function printDepthComparisonSummary(
         `OKX ${syncAssessment.okxBookAgeMs} ms; ` +
         `max ${syncAssessment.maxBookAgeMs} ms`,
     );
-    console.log(
-      `Observed ingress: Bybit ${syncAssessment.bybitObservedIngressMs ?? 'N/A'} ms; ` +
-        `OKX ${syncAssessment.okxObservedIngressMs ?? 'N/A'} ms`,
-    );
+    printSourceClock('BYBIT', syncAssessment.bybitSourceClock);
+    console.log('');
+    printSourceClock('OKX', syncAssessment.okxSourceClock);
+    console.log('');
     console.log(`Processing duration: ${processingDurationMs ?? 'N/A'} ms`);
     console.log(`Clock: ${syncAssessment.clockHealth.status}`);
     console.log(`Sync: ${syncAssessment.status}`);
@@ -205,6 +227,16 @@ export function printDepthComparisonSummary(
           console.log(
             `- max book age ${syncAssessment.maxBookAgeMs} ms > ` +
               `${timingConfig.maxBookAgeMs} ms`,
+          );
+        } else if (reason === 'SOURCE_OFFSET_DEVIATION_HIGH') {
+          console.log(
+            `- source offset deviation exceeds ` +
+              `${timingConfig.maxOffsetDeviationMs} ms`,
+          );
+        } else if (reason === 'SYNC_WARMING_UP') {
+          console.log(
+            `- source clock estimator warming up; requires ` +
+              `${timingConfig.minOffsetSamples} samples per available source`,
           );
         } else {
           console.log(`- ${reason}`);
@@ -328,12 +360,34 @@ export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
       `${metric(summary.bybitMaxObservedIngressMs, 2)} ms`,
   );
   console.log(
+    `Offset baseline Bybit: ` +
+      `${metric(summary.bybitObservedIngressBaselineMs, 2)} ms`,
+  );
+  console.log(
+    `Absolute offset deviation Bybit P50/P95/P99/max: ` +
+      `${metric(summary.bybitP50AbsoluteOffsetDeviationMs, 2)} / ` +
+      `${metric(summary.bybitP95AbsoluteOffsetDeviationMs, 2)} / ` +
+      `${metric(summary.bybitP99AbsoluteOffsetDeviationMs, 2)} / ` +
+      `${metric(summary.bybitMaxAbsoluteOffsetDeviationMs, 2)} ms`,
+  );
+  console.log(
     `Observed ingress OKX avg/P50/P95/P99/max: ` +
       `${metric(summary.okxAverageObservedIngressMs, 2)} / ` +
       `${metric(summary.okxP50ObservedIngressMs, 2)} / ` +
       `${metric(summary.okxP95ObservedIngressMs, 2)} / ` +
       `${metric(summary.okxP99ObservedIngressMs, 2)} / ` +
       `${metric(summary.okxMaxObservedIngressMs, 2)} ms`,
+  );
+  console.log(
+    `Offset baseline OKX: ` +
+      `${metric(summary.okxObservedIngressBaselineMs, 2)} ms`,
+  );
+  console.log(
+    `Absolute offset deviation OKX P50/P95/P99/max: ` +
+      `${metric(summary.okxP50AbsoluteOffsetDeviationMs, 2)} / ` +
+      `${metric(summary.okxP95AbsoluteOffsetDeviationMs, 2)} / ` +
+      `${metric(summary.okxP99AbsoluteOffsetDeviationMs, 2)} / ` +
+      `${metric(summary.okxMaxAbsoluteOffsetDeviationMs, 2)} ms`,
   );
   console.log(
     `Source timestamp skew avg/P95/P99: ` +
@@ -363,6 +417,11 @@ export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
       `${summary.receiveSkewHighCount} / ${summary.sourceSkewHighCount} / ` +
       `${summary.bookTooOldCount} / ${summary.clockUnhealthyCount} / ` +
       `${summary.timestampAnomalyCount}`,
+  );
+  console.log(
+    `Source clock warming-up/deviation-high: ` +
+      `${summary.sourceClockWarmingUpCount} / ` +
+      `${summary.sourceOffsetDeviationHighCount}`,
   );
   console.log('');
   console.log(`Completed events: ${summary.totalCompletedEvents}`);

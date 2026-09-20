@@ -5,6 +5,35 @@ import { OPPORTUNITY_QUALITY_CONFIG } from '../config/opportunity.js';
 import type { DepthComparison } from './depth-comparator.js';
 import type { ExecutionSimulation } from './execution-simulator.js';
 import { qualifyOpportunity } from './opportunity-filter.js';
+import { DETERMINISTIC_HEALTHY_CLOCK } from '../timing/clock-health.js';
+import type { SyncAssessment } from '../timing/sync-model.js';
+
+function warmingSyncAssessment(): SyncAssessment {
+  const sourceClock = {
+    rawObservedIngressMs: -120,
+    baselineObservedIngressMs: -120,
+    observedIngressDeviationMs: 0,
+    offsetSampleCount: 1,
+    offsetStatus: 'WARMING_UP' as const,
+  };
+  return {
+    status: 'SYNC_WARMING_UP',
+    receiveSkewMs: 10,
+    sourceTimestampSkewMs: 5,
+    matchingEngineSkewMs: null,
+    bybitBookAgeMs: 10,
+    okxBookAgeMs: 20,
+    maxBookAgeMs: 20,
+    bybitObservedIngressMs: -120,
+    okxObservedIngressMs: -125,
+    bybitObservedMatchingEngineIngressMs: -121,
+    okxObservedMatchingEngineIngressMs: null,
+    bybitSourceClock: sourceClock,
+    okxSourceClock: { ...sourceClock, rawObservedIngressMs: -125 },
+    clockHealth: DETERMINISTIC_HEALTHY_CLOCK,
+    reasons: ['SYNC_WARMING_UP'],
+  };
+}
 
 function execution(side: 'BUY' | 'SELL'): ExecutionSimulation {
   return {
@@ -103,4 +132,15 @@ test('accepts comparison when every quality rule passes', () => {
   assert.equal(result.qualified, true);
   assert.deepEqual(result.reasons, []);
   assert.equal(result.requiredActiveDurationMs, 100);
+});
+
+test('does not qualify a candidate while source clocks are warming up', () => {
+  const result = qualifyOpportunity(
+    comparison(),
+    OPPORTUNITY_QUALITY_CONFIG,
+    warmingSyncAssessment(),
+  );
+  assert.equal(result.qualified, false);
+  assert.equal(result.syncOk, false);
+  assert.deepEqual(result.reasons, ['STALE']);
 });

@@ -25,11 +25,21 @@ export interface OpportunityMetricsSummary {
   bybitP95ObservedIngressMs: number | null;
   bybitP99ObservedIngressMs: number | null;
   bybitMaxObservedIngressMs: number | null;
+  bybitObservedIngressBaselineMs: number | null;
+  bybitP50AbsoluteOffsetDeviationMs: number | null;
+  bybitP95AbsoluteOffsetDeviationMs: number | null;
+  bybitP99AbsoluteOffsetDeviationMs: number | null;
+  bybitMaxAbsoluteOffsetDeviationMs: number | null;
   okxAverageObservedIngressMs: number | null;
   okxP50ObservedIngressMs: number | null;
   okxP95ObservedIngressMs: number | null;
   okxP99ObservedIngressMs: number | null;
   okxMaxObservedIngressMs: number | null;
+  okxObservedIngressBaselineMs: number | null;
+  okxP50AbsoluteOffsetDeviationMs: number | null;
+  okxP95AbsoluteOffsetDeviationMs: number | null;
+  okxP99AbsoluteOffsetDeviationMs: number | null;
+  okxMaxAbsoluteOffsetDeviationMs: number | null;
   averageReceiveSkewMs: number | null;
   p50ReceiveSkewMs: number | null;
   p95ReceiveSkewMs: number | null;
@@ -53,6 +63,8 @@ export interface OpportunityMetricsSummary {
   bookTooOldCount: number;
   clockUnhealthyCount: number;
   timestampAnomalyCount: number;
+  sourceClockWarmingUpCount: number;
+  sourceOffsetDeviationHighCount: number;
   totalCompletedEvents: number;
   eventsEverActive: number;
   eventsNeverActive: number;
@@ -124,6 +136,10 @@ export class OpportunityMetrics {
   private readonly sellSlippages: number[] = [];
   private readonly bybitObservedIngress: number[] = [];
   private readonly okxObservedIngress: number[] = [];
+  private bybitObservedIngressBaselineMs: number | null = null;
+  private okxObservedIngressBaselineMs: number | null = null;
+  private readonly bybitAbsoluteOffsetDeviations: number[] = [];
+  private readonly okxAbsoluteOffsetDeviations: number[] = [];
   private readonly receiveSkews: number[] = [];
   private readonly sourceTimestampSkews: number[] = [];
   private readonly maxBookAges: number[] = [];
@@ -135,6 +151,8 @@ export class OpportunityMetrics {
   private bookTooOldCount = 0;
   private clockUnhealthyCount = 0;
   private timestampAnomalyCount = 0;
+  private sourceClockWarmingUpCount = 0;
+  private sourceOffsetDeviationHighCount = 0;
   private totalCompletedEvents = 0;
   private eventsEverActive = 0;
   private invalidSyncEvents = 0;
@@ -234,12 +252,26 @@ export class OpportunityMetrics {
       assessment.bybitObservedIngressMs !== null
     ) {
       this.bybitObservedIngress.push(assessment.bybitObservedIngressMs);
+      this.bybitObservedIngressBaselineMs =
+        assessment.bybitSourceClock.baselineObservedIngressMs;
+      if (assessment.bybitSourceClock.observedIngressDeviationMs !== null) {
+        this.bybitAbsoluteOffsetDeviations.push(
+          Math.abs(assessment.bybitSourceClock.observedIngressDeviationMs),
+        );
+      }
     }
     if (
       updatedExchange === 'okx' &&
       assessment.okxObservedIngressMs !== null
     ) {
       this.okxObservedIngress.push(assessment.okxObservedIngressMs);
+      this.okxObservedIngressBaselineMs =
+        assessment.okxSourceClock.baselineObservedIngressMs;
+      if (assessment.okxSourceClock.observedIngressDeviationMs !== null) {
+        this.okxAbsoluteOffsetDeviations.push(
+          Math.abs(assessment.okxSourceClock.observedIngressDeviationMs),
+        );
+      }
     }
     if (processingDurationMs !== null) {
       this.processingDurations.push(processingDurationMs);
@@ -261,6 +293,12 @@ export class OpportunityMetrics {
     }
     if (assessment.reasons.includes('TIMESTAMP_ANOMALY')) {
       this.timestampAnomalyCount += 1;
+    }
+    if (assessment.reasons.includes('SYNC_WARMING_UP')) {
+      this.sourceClockWarmingUpCount += 1;
+    }
+    if (assessment.reasons.includes('SOURCE_OFFSET_DEVIATION_HIGH')) {
+      this.sourceOffsetDeviationHighCount += 1;
     }
   }
 
@@ -295,6 +333,22 @@ export class OpportunityMetrics {
         99,
       ),
       bybitMaxObservedIngressMs: maximum(this.bybitObservedIngress),
+      bybitObservedIngressBaselineMs: this.bybitObservedIngressBaselineMs,
+      bybitP50AbsoluteOffsetDeviationMs: nearestRankPercentile(
+        this.bybitAbsoluteOffsetDeviations,
+        50,
+      ),
+      bybitP95AbsoluteOffsetDeviationMs: nearestRankPercentile(
+        this.bybitAbsoluteOffsetDeviations,
+        95,
+      ),
+      bybitP99AbsoluteOffsetDeviationMs: nearestRankPercentile(
+        this.bybitAbsoluteOffsetDeviations,
+        99,
+      ),
+      bybitMaxAbsoluteOffsetDeviationMs: maximum(
+        this.bybitAbsoluteOffsetDeviations,
+      ),
       okxAverageObservedIngressMs: average(this.okxObservedIngress),
       okxP50ObservedIngressMs: nearestRankPercentile(
         this.okxObservedIngress,
@@ -309,6 +363,22 @@ export class OpportunityMetrics {
         99,
       ),
       okxMaxObservedIngressMs: maximum(this.okxObservedIngress),
+      okxObservedIngressBaselineMs: this.okxObservedIngressBaselineMs,
+      okxP50AbsoluteOffsetDeviationMs: nearestRankPercentile(
+        this.okxAbsoluteOffsetDeviations,
+        50,
+      ),
+      okxP95AbsoluteOffsetDeviationMs: nearestRankPercentile(
+        this.okxAbsoluteOffsetDeviations,
+        95,
+      ),
+      okxP99AbsoluteOffsetDeviationMs: nearestRankPercentile(
+        this.okxAbsoluteOffsetDeviations,
+        99,
+      ),
+      okxMaxAbsoluteOffsetDeviationMs: maximum(
+        this.okxAbsoluteOffsetDeviations,
+      ),
       averageReceiveSkewMs: average(this.receiveSkews),
       p50ReceiveSkewMs: nearestRankPercentile(this.receiveSkews, 50),
       p95ReceiveSkewMs: nearestRankPercentile(this.receiveSkews, 95),
@@ -347,6 +417,8 @@ export class OpportunityMetrics {
       bookTooOldCount: this.bookTooOldCount,
       clockUnhealthyCount: this.clockUnhealthyCount,
       timestampAnomalyCount: this.timestampAnomalyCount,
+      sourceClockWarmingUpCount: this.sourceClockWarmingUpCount,
+      sourceOffsetDeviationHighCount: this.sourceOffsetDeviationHighCount,
       totalCompletedEvents: this.totalCompletedEvents,
       eventsEverActive: this.eventsEverActive,
       eventsNeverActive: this.totalCompletedEvents - this.eventsEverActive,

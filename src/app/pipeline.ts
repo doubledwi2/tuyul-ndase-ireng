@@ -45,6 +45,10 @@ import {
   assessSynchronization,
   type SyncAssessment,
 } from '../timing/sync-model.js';
+import {
+  SourceClockOffsetEstimator,
+  type SourceClockOffsetDiagnostic,
+} from '../timing/source-clock-offset.js';
 
 export interface PipelineSnapshot {
   bybitQuote: BestQuote;
@@ -85,13 +89,26 @@ export class MarketPipeline {
   >();
   private readonly opportunityTracker: OpportunityTracker;
   private readonly opportunityMetrics = new OpportunityMetrics();
+  private readonly sourceClockOffsetEstimators: Record<
+    NormalizedOrderBook['exchange'],
+    SourceClockOffsetEstimator
+  >;
+  private readonly latestSourceClockDiagnostics = new Map<
+    NormalizedOrderBook['exchange'],
+    SourceClockOffsetDiagnostic
+  >();
   private latestSnapshot: PipelineSnapshot | null = null;
   private latestDepthSnapshot: DepthPipelineSnapshot | null = null;
 
   constructor(private readonly options: MarketPipelineOptions = {}) {
+    const timingConfig = options.timingConfig ?? TIMING_CONFIG;
     this.opportunityTracker = new OpportunityTracker(
       options.qualityConfig ?? OPPORTUNITY_QUALITY_CONFIG,
     );
+    this.sourceClockOffsetEstimators = {
+      bybit: new SourceClockOffsetEstimator(timingConfig),
+      okx: new SourceClockOffsetEstimator(timingConfig),
+    };
   }
 
   processQuote(
@@ -160,9 +177,18 @@ export class MarketPipeline {
     if (!isValidNormalizedOrderBook(orderBook)) {
       return null;
     }
+    const sourceClockDiagnostic = this.sourceClockOffsetEstimators[
+      orderBook.exchange
+    ].observe(orderBook.exchangeTimestamp, orderBook.receivedTimestamp);
+    this.latestSourceClockDiagnostics.set(
+      orderBook.exchange,
+      sourceClockDiagnostic,
+    );
     this.latestBooks.set(orderBook.exchange, orderBook);
     const bybitBook = this.latestBooks.get('bybit');
     const okxBook = this.latestBooks.get('okx');
+    const bybitSourceClock = this.latestSourceClockDiagnostics.get('bybit');
+    const okxSourceClock = this.latestSourceClockDiagnostics.get('okx');
     const comparisons = compareOrderBooks(
       bybitBook,
       okxBook,
@@ -173,6 +199,8 @@ export class MarketPipeline {
     if (
       bybitBook === undefined ||
       okxBook === undefined ||
+      bybitSourceClock === undefined ||
+      okxSourceClock === undefined ||
       comparisons === null
     ) {
       return null;
@@ -183,6 +211,7 @@ export class MarketPipeline {
       processingTimestamp,
       clockHealth,
       this.options.timingConfig ?? TIMING_CONFIG,
+      { bybit: bybitSourceClock, okx: okxSourceClock },
     );
     const qualifications = comparisons.map((comparison) =>
       qualifyOpportunity(

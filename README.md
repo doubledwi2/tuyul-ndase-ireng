@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Latency, Clock Health & Synchronization Model v0.2.3 adalah Phase 2.3 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, mensimulasikan hypothetical taker execution, lalu menilai economics, timing health, dan kualitas candidate secara terpisah.
+Clock Offset Baseline & Sync Model Correction v0.2.4 adalah corrective hardening Phase 2.3.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, mensimulasikan hypothetical taker execution, lalu menilai economics, timing health, dan kualitas candidate secara terpisah.
 
 Aplikasi ini tidak memakai API key atau autentikasi dan tidak melakukan trading maupun order execution. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill. Persistence hanya berupa file JSONL lokal; tidak ada database.
 
@@ -90,7 +90,7 @@ Wall clock dan monotonic clock mempunyai fungsi berbeda:
 - `Date.now()` kompatibel dengan epoch timestamp exchange dan digunakan untuk source diagnostics/book age.
 - `performance.now()` monotonic dan digunakan untuk local processing interval.
 
-`observedIngressMs = receivedTimestamp - exchangeTimestamp` sengaja tidak disebut one-way network latency. Nilai ini juga mengandung clock offset antara host dan exchange, processing/publishing delay exchange, serta transport delay. Nilai negatif tidak di-clamp dan ditandai sebagai anomaly.
+`observedIngressMs = receivedTimestamp - exchangeTimestamp` sengaja tidak disebut one-way network latency. Nilai ini juga mengandung clock offset antara host dan exchange, processing/publishing delay exchange, serta transport delay. Nilai raw, termasuk yang negatif, tidak di-clamp. Nilai negatif yang stabil dapat terjadi karena offset antara source clock dan host clock; nilai negatif saja bukan timing error.
 
 Definisi yang tidak dicampur:
 
@@ -106,13 +106,18 @@ MAX_RECEIVE_SKEW_MS = 100
 MAX_BOOK_AGE_MS = 500
 MAX_SOURCE_TIMESTAMP_SKEW_MS = 250
 CLOCK_JUMP_THRESHOLD_MS = 50
+MIN_OFFSET_SAMPLES = 30
+OFFSET_WINDOW_SIZE = 200
+MAX_OFFSET_DEVIATION_MS = 100
 ```
 
-`SYNC_HEALTHY` memerlukan host clock tidak berstatus `CLOCK_JUMP_DETECTED`, receive skew dan book age di bawah batas, source timestamp skew di bawah batas jika kedua exchange menyediakannya, serta tidak ada negative/impossible timing. Source timestamp comparison hanya sanity check; bukan bukti clock exchange sempurna.
+Estimator terpisah untuk Bybit dan OKX menyimpan 200 observed-ingress terbaru dan memakai rolling median sebagai baseline setelah warm-up 30 sampel. `observedIngressDeviationMs` adalah raw observed ingress dikurangi baseline tersebut. Sebelum warm-up selesai statusnya `WARMING_UP`; deviasi absolut di atas 100 ms menjadi `DEVIATION_HIGH`. Rolling median ini hanya offset diagnostic yang robust terhadap spike—bukan koreksi network latency, bukan kompensasi timestamp, dan tidak mengubah timestamp exchange.
 
-Primary sync status adalah `SYNC_HEALTHY`, `RECEIVE_SKEW_HIGH`, `SOURCE_SKEW_HIGH`, `BOOK_TOO_OLD`, `CLOCK_UNHEALTHY`, atau `TIMESTAMP_ANOMALY`. Array `reasons` mempertahankan seluruh kegagalan sekaligus. Karena OKX `books` tidak menyediakan matching-engine timestamp ekuivalen Bybit `cts`, `matchingEngineSkewMs` tetap `null`.
+`SYNC_HEALTHY` memerlukan host clock tidak berstatus `CLOCK_JUMP_DETECTED`, estimator source yang tersedia sudah stable, receive skew dan book age di bawah batas, source timestamp skew di bawah batas jika kedua exchange menyediakannya, tidak ada source-offset deviation tinggi, serta tidak ada self-consistency anomaly seperti negative local book age atau timestamp non-finite. Raw source-vs-host offset negatif tidak termasuk anomaly.
 
-`ClockHealthMonitor` membandingkan `wallDelta - monotonicDelta`. Sampel pertama `WARMING_UP`; drift mendadak di atas 50 ms menjadi `CLOCK_JUMP_DETECTED`. Monitor hanya mendeteksi dan melaporkan—tidak mengubah clock OS atau mengompensasi timestamp. Infrastruktur VPS/NTP/chrony yang lebih ketat berada di roadmap Phase 4.
+Primary sync status adalah `SYNC_HEALTHY`, `SYNC_WARMING_UP`, `SOURCE_OFFSET_DEVIATION_HIGH`, `RECEIVE_SKEW_HIGH`, `SOURCE_SKEW_HIGH`, `BOOK_TOO_OLD`, `CLOCK_UNHEALTHY`, atau `TIMESTAMP_ANOMALY`. Array `reasons` mempertahankan seluruh kegagalan sekaligus. Jika source timestamp tidak tersedia, estimator melaporkan `UNAVAILABLE` tanpa mengarang nilai. Cross-exchange source skew tetap merupakan sanity check antar-source clock, bukan bukti sinkronisasi absolut. Karena OKX `books` tidak menyediakan matching-engine timestamp ekuivalen Bybit `cts`, `matchingEngineSkewMs` tetap `null`.
+
+`ClockHealthMonitor` membandingkan `wallDelta - monotonicDelta`. Sampel pertama `WARMING_UP`; drift mendadak di atas 50 ms menjadi `CLOCK_JUMP_DETECTED`. Local clock-jump detection ini terpisah dari source-vs-host offset estimator. Keduanya hanya mendeteksi dan melaporkan—tidak mengubah clock OS, exchange timestamp, atau economic ordering. Infrastruktur VPS/NTP/chrony yang lebih ketat berada di roadmap Phase 4.
 
 ## Opportunity quality filter
 
@@ -203,7 +208,10 @@ npm run replay:book -- \
   --min-duration 50 \
   --max-receive-skew 100 \
   --max-book-age 500 \
-  --max-source-skew 250
+  --max-source-skew 250 \
+  --min-offset-samples 30 \
+  --offset-window-size 200 \
+  --max-offset-deviation 100
 ```
 
 Override tidak mengubah raw dataset dan tidak otomatis diturunkan untuk memaksa munculnya event.
@@ -222,7 +230,7 @@ Pilihan speed:
 
 Default speed adalah `max`. Default input `replay:book` adalah `data/orderbooks.jsonl`, sedangkan replay lama memakai `data/market-quotes.jsonl`. Scheduling memakai `recordedAt`, bukan exchange timestamp, agar arrival sequence lokal dapat direproduksi. Blank line dilewati; record malformed atau invalid diberi warning dan dilewati tanpa menghentikan seluruh replay.
 
-Live dan order book replay memanggil `MarketPipeline.processOrderBook()` yang sama. Waktu logis replay menggunakan `recordedAt`, bukan `Date.now()`. Replay menginjeksi deterministic `HEALTHY` clock status dan tidak memakai clock health laptop saat replay, sehingga speed/NTP adjustment tidak mengubah decision. Replay processing duration tidak dicampur dengan live metrics dan bernilai `N/A`. UUID event boleh berbeda antar-run.
+Live dan order book replay memanggil `MarketPipeline.processOrderBook()` yang sama. Waktu logis replay menggunakan `recordedAt`, bukan `Date.now()`. Source-offset baseline hanya bergantung pada timestamp dan urutan record. Replay juga menginjeksi deterministic `HEALTHY` clock status dan tidak memakai clock health laptop saat replay, sehingga speed/NTP adjustment tidak mengubah decision. Replay processing duration tidak dicampur dengan live metrics dan bernilai `N/A`. UUID event boleh berbeda antar-run.
 
 Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Setiap run memakai output unik berbentuk `data/replays/<timestamp>-<short-id>/opportunity-events.jsonl`, sehingga hasil antar-run dan live event tidak tercampur. Path aktual dicetak pada akhir replay. Jika tidak ada event, file tersebut tidak perlu dibuat. Event yang masih terbuka dilaporkan jumlahnya dan tidak dipaksa menjadi `DISAPPEARED`.
 
@@ -240,11 +248,13 @@ Session metrics comparison depth mencakup:
 - Total executable net-positive dan quality-qualified comparisons.
 - Total rejection serta breakdown `NOT_NET_POSITIVE`, small net spread, small net PnL, wide sync, insufficient depth, dan stale.
 - Observed ingress Bybit/OKX: average, P50, P95, P99, maksimum.
+- Final rolling-median observed-ingress baseline per exchange.
+- Absolute offset deviation Bybit/OKX: P50, P95, P99, maksimum.
 - Receive skew: average, P50, P95, P99, maksimum.
 - Source timestamp skew: average, P95, P99.
 - Max book age: P50, P95, P99.
 - Live monotonic processing duration: average, P50, P95, P99, maksimum.
-- Count sync healthy serta receive/source skew high, book too old, clock unhealthy, dan timestamp anomaly.
+- Count sync healthy, source-clock warm-up/deviation tinggi, receive/source skew high, book too old, clock unhealthy, dan timestamp anomaly.
 
 Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
@@ -316,8 +326,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 2.0 fee-aware model: complete.
 - Phase 2.1 depth/slippage: complete.
 - Phase 2.2 opportunity quality: complete.
-- Phase 2.3 latency, clock health, dan synchronization: complete/current.
+- Phase 2.3 latency, clock health, dan synchronization: complete.
+- Phase 2.3.1 clock-offset baseline correction: complete/current.
 
-## Scope Phase 2.3
+## Scope Phase 2.3.1
 
 Scope versi ini terbatas pada timing diagnostics, clock-jump detection, explicit synchronization assessment, public multi-level order book, hypothetical execution, quality filtering, replay, dan metrics. Tidak ada ping/RTT palsu, timestamp compensation, real order execution, balance, transfer, private API, database, dashboard, atau paper trading.
