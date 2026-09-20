@@ -1,8 +1,8 @@
 # tuyul-ndase-ireng
 
-Order Book Depth + Slippage Simulation v0.2.1 adalah Phase 2.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT dari Bybit Spot dan OKX Spot, mensimulasikan hypothetical taker execution, lalu menghitung estimated net result berdasarkan VWAP dan fee.
+Executable Opportunity Quality Filter v0.2.2 adalah Phase 2.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT dari Bybit Spot dan OKX Spot, mensimulasikan hypothetical taker execution, menghitung estimated net result berdasarkan VWAP dan fee, lalu menilai kualitas candidate dengan threshold yang eksplisit.
 
-Aplikasi ini tidak memakai API key atau autentikasi, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution. Persistence hanya berupa file JSONL lokal untuk normalized market quote serta perubahan state opportunity; tidak ada database.
+Aplikasi ini tidak memakai API key atau autentikasi dan tidak melakukan trading maupun order execution. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill. Persistence hanya berupa file JSONL lokal; tidak ada database.
 
 ## Data source
 
@@ -91,24 +91,40 @@ Comparator memakai `receivedTimestamp` sebagai safety check awal:
 
 Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang terlalu jauh waktunya. `SYNC_OK` bukan jaminan opportunity valid atau executable dan bukan batas ideal untuk trading.
 
+## Opportunity quality filter
+
+`EXECUTABLE_NET_POSITIVE` tidak sama dengan `QUALIFIED`. Status pertama hanya berarti depth cukup, sync dasar lolos, dan estimated net PnL positif. Satu observation menjadi quality-valid candidate hanya jika seluruh baseline berikut terpenuhi:
+
+```text
+MIN_NET_SPREAD_PERCENT = 0.03%
+MIN_NET_PNL_USDT = 0.01 USDT
+MAX_SYNC_DIFF_MS_FOR_QUALIFIED = 100 ms
+MIN_ACTIVE_DURATION_MS = 100 ms
+```
+
+Semua nilai berada di `src/config/opportunity.ts`, dapat diinjeksi saat test/replay, dan merupakan baseline engineering—bukan rekomendasi trading. Filter menghasilkan reason terstruktur: `NOT_NET_POSITIVE`, `NET_SPREAD_TOO_SMALL`, `NET_PNL_TOO_SMALL`, `SYNC_TOO_WIDE`, `INSUFFICIENT_DEPTH`, atau `STALE`.
+
+`QUALIFIED` berarti kedua leg fully filled dalam simulasi, estimated net positif, melewati minimum spread dan PnL, memiliki receive-time difference maksimal 100 ms, serta mempertahankan seluruh kondisi itu minimal 100 ms. Market tetap dapat berubah sebelum hypothetical order tiba, sehingga status ini bukan jaminan actual execution.
+
 ## Opportunity event lifecycle
 
-Mulai Phase 2.1, candidate opportunity hanya dibuat untuk status `EXECUTABLE_NET_POSITIVE`. Best-price spread yang terlihat positif tetapi berubah non-positive setelah VWAP dan fee tetap ditampilkan, tetapi tidak membuat `OpportunityEvent`.
+Mulai Phase 2.2, candidate event hanya dibuat dari observation yang lolos seluruh quality rule statis. Best-price spread yang terlihat positif tetapi gagal setelah VWAP, fee, threshold, atau sync quality tetap ditampilkan dengan rejection reason, tetapi tidak membuat `OpportunityEvent`.
 
 Setiap arah mempunyai event independen dengan key seperti `BTC/USDT:bybit->okx`. Event ID yang sama dipertahankan sepanjang satu lifecycle agar candidate dapat dilacak dari awal sampai berakhir. Setelah event `DISAPPEARED`, kemunculan baru pada arah yang sama mendapat ID baru.
 
-Untuk simulated executable net-positive comparison, state dipromosikan berdasarkan observasi valid berturut-turut tanpa timer tambahan:
+Lifecycle memakai timestamp yang diinjeksi dan tidak memakai sleep/timer di business logic:
 
 ```text
-observasi valid #1  DETECTED
-observasi valid #2  VALIDATING
-observasi valid #3+ ACTIVE
-net <= 0/depth kurang  DISAPPEARED
+observasi quality-valid pertama                DETECTED
+observasi berikut sebelum minimum duration     VALIDATING
+quality-valid selama minimal 100 ms            QUALIFIED
+quality failure biasa                          DISAPPEARED
+data stale                                     INVALID_SYNC
 ```
 
-Data stale tidak membuat event baru. Jika event yang sudah hidup kemudian menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data kembali `SYNC_OK` dan estimated net kembali positif, urutan observasi valid dimulai lagi dari `DETECTED` dengan event ID yang sama.
+Data stale tidak membuat event baru. Jika event hidup menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data pulih dan seluruh rule kembali lolos, validation window dimulai ulang dari `DETECTED` dengan event ID yang sama agar interval stale tidak dihitung sebagai active duration. Jika event belum pernah qualified, `detectedAt` juga di-reset; history qualification pertama pada event yang sudah pernah qualified tetap dipertahankan.
 
-Selama event hidup, collector memperbarui current dan peak gross spread, estimated net spread, estimated net PnL, estimated total fee, serta peak tradable size. Peak memakai maksimum dan tidak menjumlahkan observasi antar-tick. Lifetime baru dihitung ketika event menjadi `DISAPPEARED`. State `ACTIVE` tetap bukan jaminan bahwa candidate executable atau profitable.
+Event menyimpan `qualifiedAt`, `timeToQualifiedMs`, `everQualified`, dan `currentQualificationReasons`. Selama event hidup, collector juga memperbarui current/peak economics dan peak tradable size. State `ACTIVE` tetap ada pada type dan field history untuk kompatibilitas dataset Phase 1/2, tetapi lifecycle Phase 2.2 memancarkan `DETECTED`, `VALIDATING`, lalu `QUALIFIED`.
 
 ## Raw market recording
 
@@ -154,6 +170,20 @@ Order book dataset dapat diputar melalui depth pipeline yang sama tanpa membuat 
 npm run replay:book -- --file data/orderbooks.jsonl --speed max
 ```
 
+Threshold quality dapat di-override untuk scenario testing:
+
+```bash
+npm run replay:book -- \
+  --file data/orderbooks.jsonl \
+  --speed max \
+  --min-net-spread 0.02 \
+  --min-net-pnl 0.01 \
+  --min-duration 50 \
+  --max-sync-diff 100
+```
+
+Override tidak mengubah raw dataset dan tidak otomatis diturunkan untuk memaksa munculnya event.
+
 Replay `BestQuote` lama tetap tersedia:
 
 ```bash
@@ -183,12 +213,16 @@ Session metrics comparison depth mencakup:
 - Count `EXECUTABLE_NET_POSITIVE`.
 - Count `EXECUTABLE_NET_ZERO_OR_NEGATIVE`.
 - Average BUY dan SELL slippage percent.
+- Total executable net-positive dan quality-qualified comparisons.
+- Total rejection serta breakdown `NOT_NET_POSITIVE`, small net spread, small net PnL, wide sync, insufficient depth, dan stale.
 
 Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
 - `eventsEverActive`: completed event yang pernah mencapai `ACTIVE`.
 - `eventsNeverActive`: completed event yang tidak pernah mencapai `ACTIVE`.
 - `invalidSyncEvents`: completed event yang pernah memasuki `INVALID_SYNC`.
+- `eventsEverQualified` dan `eventsNeverQualified`.
+- Average, P50, dan P95 time-to-qualified.
 - Average, minimum, maksimum, P50, P95, dan P99 lifetime.
 - Average dan maksimum peak gross spread percent.
 - Average dan maksimum peak estimated net spread percent.
@@ -197,7 +231,7 @@ Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
 Field `everActive` dan `everInvalidSync` disimpan pada setiap snapshot dan dibawa sampai final event; history tidak ditebak dari final state. Percentile menggunakan metode **nearest-rank** pada lifetime yang diurutkan ascending: rank = `ceil(percentile / 100 * jumlah sample)`.
 
-Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Metrics masih bersifat in-memory untuk session berjalan dan reset saat aplikasi restart. Nilai net tetap estimasi top-of-book, bukan realized profit.
+Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Comparison count tidak dicampur dengan completed-event count. Metrics masih in-memory dan reset saat aplikasi restart. Nilai net berasal dari simulasi multi-level depth dan tetap bukan realized profit.
 
 ## Requirements
 
@@ -246,6 +280,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 2.1
+## Scope Phase 2.2
 
-Scope versi ini terbatas pada public multi-level order book, local reconstruction, hypothetical target-size execution, VWAP/slippage, estimated taker fees, replay, lifecycle, dan metrics. Belum ada real order execution, balance, transfer, private API, database, dashboard, atau paper trading.
+Scope versi ini terbatas pada public multi-level order book, local reconstruction, hypothetical target-size execution, VWAP/slippage, estimated taker fees, quality filtering, duration-based lifecycle, replay, dan metrics. Belum ada real order execution, balance, transfer, private API, database, dashboard, atau paper trading.

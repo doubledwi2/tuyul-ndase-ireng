@@ -1,4 +1,8 @@
 import { FEES, type FeeConfig } from '../config/fees.js';
+import {
+  OPPORTUNITY_QUALITY_CONFIG,
+  type OpportunityQualityConfig,
+} from '../config/opportunity.js';
 import { TARGET_BTC_SIZE } from '../config/simulation.js';
 import {
   OpportunityMetrics,
@@ -23,6 +27,10 @@ import {
   OpportunityTracker,
   type OpportunityEvent,
 } from '../scanner/opportunity.js';
+import {
+  qualifyOpportunity,
+  type OpportunityQualification,
+} from '../scanner/opportunity-filter.js';
 import { isValidBestQuote, type BestQuote } from '../types/market.js';
 import {
   isValidNormalizedOrderBook,
@@ -40,13 +48,20 @@ export interface DepthPipelineSnapshot {
   bybitBook: NormalizedOrderBook;
   okxBook: NormalizedOrderBook;
   comparisons: DepthComparisons;
+  qualifications: OpportunityQualifications;
 }
+
+export type OpportunityQualifications = [
+  OpportunityQualification,
+  OpportunityQualification,
+];
 
 export interface MarketPipelineOptions {
   eventRecorder?: Pick<EventRecorder, 'record' | 'flush'>;
   onEvent?: (event: OpportunityEvent) => void;
   fees?: FeeConfig;
   targetBaseSize?: number;
+  qualityConfig?: OpportunityQualityConfig;
 }
 
 export class MarketPipeline {
@@ -55,12 +70,16 @@ export class MarketPipeline {
     NormalizedOrderBook['exchange'],
     NormalizedOrderBook
   >();
-  private readonly opportunityTracker = new OpportunityTracker();
+  private readonly opportunityTracker: OpportunityTracker;
   private readonly opportunityMetrics = new OpportunityMetrics();
   private latestSnapshot: PipelineSnapshot | null = null;
   private latestDepthSnapshot: DepthPipelineSnapshot | null = null;
 
-  constructor(private readonly options: MarketPipelineOptions = {}) {}
+  constructor(private readonly options: MarketPipelineOptions = {}) {
+    this.opportunityTracker = new OpportunityTracker(
+      options.qualityConfig ?? OPPORTUNITY_QUALITY_CONFIG,
+    );
+  }
 
   processQuote(
     quote: BestQuote,
@@ -98,8 +117,20 @@ export class MarketPipeline {
       ],
     };
     this.latestSnapshot = pipelineSnapshot;
+    const legacyComparisons = pipelineSnapshot.feeAwareComparisons.map(
+      legacyFeeComparisonToDepth,
+    );
+    const legacyQualityConfig: OpportunityQualityConfig = {
+      minNetSpreadPercent: 0,
+      minNetPnlUsdt: 0,
+      minActiveDurationMs: 0,
+      maxSyncDiffMsForQualified: Number.MAX_SAFE_INTEGER,
+    };
     this.processOpportunityComparisons(
-      pipelineSnapshot.feeAwareComparisons.map(legacyFeeComparisonToDepth),
+      legacyComparisons,
+      legacyComparisons.map((comparison) =>
+        qualifyOpportunity(comparison, legacyQualityConfig),
+      ),
       processingTimestamp,
       false,
     );
@@ -135,24 +166,41 @@ export class MarketPipeline {
       bybitBook,
       okxBook,
       comparisons,
+      qualifications: comparisons.map((comparison) =>
+        qualifyOpportunity(
+          comparison,
+          this.options.qualityConfig ?? OPPORTUNITY_QUALITY_CONFIG,
+        ),
+      ) as OpportunityQualifications,
     };
     this.latestDepthSnapshot = snapshot;
-    this.processOpportunityComparisons(comparisons, processingTimestamp, true);
+    this.processOpportunityComparisons(
+      comparisons,
+      snapshot.qualifications,
+      processingTimestamp,
+      true,
+    );
     return snapshot;
   }
 
   private processOpportunityComparisons(
     comparisons: readonly DepthComparison[],
+    qualifications: readonly OpportunityQualification[],
     processingTimestamp: number,
     recordComparisonMetrics: boolean,
   ): void {
-    for (const comparison of comparisons) {
+    for (const [index, comparison] of comparisons.entries()) {
+      const qualification = qualifications[index];
+      if (qualification === undefined) {
+        throw new Error('Missing opportunity qualification.');
+      }
       if (recordComparisonMetrics) {
-        this.opportunityMetrics.recordComparison(comparison);
+        this.opportunityMetrics.recordComparison(comparison, qualification);
       }
       const event = this.opportunityTracker.process(
         comparison,
         processingTimestamp,
+        qualification,
       );
       if (event === null) {
         continue;

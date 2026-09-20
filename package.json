@@ -1,8 +1,8 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
-  "description": "Depth-aware BTC/USDT cross-exchange execution simulator",
+  "description": "Depth-aware BTC/USDT opportunity quality analyzer",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { OpportunityEvent } from '../scanner/opportunity.js';
+import type { DepthComparison } from '../scanner/depth-comparator.js';
+import type { ExecutionSimulation } from '../scanner/execution-simulator.js';
+import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import { OpportunityMetrics } from './opportunity-metrics.js';
 
 function completedEvent(
@@ -17,6 +20,10 @@ function completedEvent(
     updatedAt: 200,
     endedAt: 200,
     lifetimeMs: 100,
+    qualifiedAt: null,
+    timeToQualifiedMs: null,
+    everQualified: false,
+    currentQualificationReasons: [],
     initialGrossSpreadPercent: 0.01,
     currentGrossSpreadPercent: 0,
     peakGrossSpreadPercent: 0.02,
@@ -43,6 +50,67 @@ function completedEvent(
     everActive: false,
     everInvalidSync: false,
     ...overrides,
+  };
+}
+
+function execution(side: 'BUY' | 'SELL'): ExecutionSimulation {
+  return {
+    side,
+    requestedSize: 0.01,
+    filledSize: 0.01,
+    unfilledSize: 0,
+    fullyFilled: true,
+    notional: 1,
+    averageExecutionPrice: 100,
+    bestPrice: 100,
+    slippageAbsolute: 0,
+    slippagePercent: 0,
+  };
+}
+
+function depthComparison(
+  status: DepthComparison['status'] = 'EXECUTABLE_NET_POSITIVE',
+): DepthComparison {
+  return {
+    symbol: 'BTC/USDT',
+    buyExchange: 'bybit',
+    sellExchange: 'okx',
+    targetBaseSize: 0.01,
+    buyExecution: execution('BUY'),
+    sellExecution: execution('SELL'),
+    buyFeeRate: 0,
+    sellFeeRate: 0,
+    simulatedBuyNotional: 1,
+    simulatedSellNotional: 1.01,
+    estimatedBuyFee: 0,
+    estimatedSellFee: 0,
+    estimatedTotalFee: 0,
+    grossPnlAbsolute: 0.01,
+    estimatedNetPnlAbsolute: 0.01,
+    estimatedNetSpreadPercent: 1,
+    bestGrossSpreadAbsolute: 1,
+    bestGrossSpreadPercent: 1,
+    tradableSize: 0.01,
+    buyReceivedTimestamp: 1,
+    sellReceivedTimestamp: 2,
+    receiveTimeDifferenceMs: 1,
+    syncStatus: status === 'STALE' ? 'STALE' : 'SYNC_OK',
+    status,
+  };
+}
+
+function qualification(
+  qualified: boolean,
+  reasons: OpportunityQualification['reasons'] = [],
+): OpportunityQualification {
+  return {
+    qualified,
+    reasons,
+    netSpreadOk: qualified,
+    netPnlOk: qualified,
+    syncOk: qualified,
+    depthOk: qualified,
+    requiredActiveDurationMs: 100,
   };
 }
 
@@ -162,4 +230,58 @@ test('aggregates peak estimated net spread and PnL', () => {
   assert.equal(summary.maxPeakNetSpreadPercent, 0.05);
   assert.equal(summary.averagePeakNetPnlAbsolute, 1.5);
   assert.equal(summary.maxPeakNetPnlAbsolute, 2.5);
+});
+
+test('counts qualified comparisons and rejection reasons independently', () => {
+  const metrics = new OpportunityMetrics();
+  metrics.recordComparison(depthComparison(), qualification(true));
+  metrics.recordComparison(
+    depthComparison(),
+    qualification(false, ['NET_SPREAD_TOO_SMALL', 'NET_PNL_TOO_SMALL']),
+  );
+  metrics.recordComparison(
+    depthComparison(),
+    qualification(false, ['SYNC_TOO_WIDE']),
+  );
+  metrics.recordComparison(
+    depthComparison('INSUFFICIENT_DEPTH'),
+    qualification(false, ['INSUFFICIENT_DEPTH']),
+  );
+  metrics.recordComparison(
+    depthComparison('STALE'),
+    qualification(false, ['STALE']),
+  );
+  metrics.recordComparison(
+    depthComparison('EXECUTABLE_NET_ZERO_OR_NEGATIVE'),
+    qualification(false, ['NOT_NET_POSITIVE']),
+  );
+
+  const summary = metrics.getSummary();
+  assert.equal(summary.totalNetPositiveComparisons, 3);
+  assert.equal(summary.qualifiedComparisons, 1);
+  assert.equal(summary.qualificationRejectedCount, 5);
+  assert.equal(summary.rejectedSmallNetSpread, 1);
+  assert.equal(summary.rejectedSmallNetPnl, 1);
+  assert.equal(summary.rejectedWideSync, 1);
+  assert.equal(summary.rejectedInsufficientDepth, 1);
+  assert.equal(summary.rejectedStale, 1);
+  assert.equal(summary.rejectedNotNetPositive, 1);
+});
+
+test('aggregates qualified event count and qualification times', () => {
+  const metrics = new OpportunityMetrics();
+  metrics.recordCompleted(
+    completedEvent({ everQualified: true, timeToQualifiedMs: 100 }),
+  );
+  metrics.recordCompleted(
+    completedEvent({ everQualified: true, timeToQualifiedMs: 200 }),
+  );
+  metrics.recordCompleted(completedEvent());
+
+  const summary = metrics.getSummary();
+  assert.equal(summary.eventsEverQualified, 2);
+  assert.equal(summary.eventsNeverQualified, 1);
+  assert.equal(summary.averageTimeToQualifiedMs, 150);
+  assert.equal(summary.p50TimeToQualifiedMs, 100);
+  assert.equal(summary.p95TimeToQualifiedMs, 200);
 });

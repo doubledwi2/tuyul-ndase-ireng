@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type { FeeConfig } from '../config/fees.js';
+import type { OpportunityQualityConfig } from '../config/opportunity.js';
 import type { MarketQuoteRecord } from '../recording/market-recorder.js';
 import type { OrderBookRecord } from '../recording/orderbook-recorder.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
@@ -89,7 +90,7 @@ test('direct and replay pipelines produce equivalent opportunity transitions', a
 
   assert.deepEqual(
     directEvents.map((event) => event.state),
-    ['DETECTED', 'VALIDATING', 'ACTIVE', 'DISAPPEARED'],
+    ['DETECTED', 'QUALIFIED', 'DISAPPEARED'],
   );
   assert.deepEqual(
     replayEvents.map(comparableEvent),
@@ -166,9 +167,16 @@ test('direct and replayed order books produce deterministic fills and lifecycle'
     okx: { takerRate: 0 },
   };
   const directEvents: OpportunityEvent[] = [];
+  const qualityConfig: OpportunityQualityConfig = {
+    minNetSpreadPercent: 0.03,
+    minNetPnlUsdt: 0.01,
+    minActiveDurationMs: 20,
+    maxSyncDiffMsForQualified: 100,
+  };
   const direct = new MarketPipeline({
     fees: zeroFees,
     targetBaseSize: 0.2,
+    qualityConfig,
     onEvent: (event) => directEvents.push(event),
   });
   for (const record of records) {
@@ -187,6 +195,7 @@ test('direct and replayed order books produce deterministic fills and lifecycle'
   const replay = new MarketPipeline({
     fees: zeroFees,
     targetBaseSize: 0.2,
+    qualityConfig,
     onEvent: (event) => replayEvents.push(event),
   });
   await replayOrderBooks({
@@ -199,7 +208,7 @@ test('direct and replayed order books produce deterministic fills and lifecycle'
 
   assert.deepEqual(
     directEvents.map((event) => event.state),
-    ['DETECTED', 'VALIDATING', 'ACTIVE', 'DISAPPEARED'],
+    ['DETECTED', 'VALIDATING', 'QUALIFIED', 'DISAPPEARED'],
   );
   assert.deepEqual(
     replayEvents.map(comparableEvent),
@@ -211,4 +220,66 @@ test('direct and replayed order books produce deterministic fills and lifecycle'
   );
   assert.deepEqual(replay.getMetricsSummary(), direct.getMetricsSummary());
   assert.equal(replay.getMetricsSummary().comparisonsTotal, 8);
+});
+
+test('replay quality config override can change qualification result', async (context) => {
+  const records: OrderBookRecord[] = [
+    { recordedAt: 4_000, orderBook: orderBook('bybit', 99, 100, 4_000) },
+    { recordedAt: 4_010, orderBook: orderBook('okx', 102, 103, 4_010) },
+    { recordedAt: 4_120, orderBook: orderBook('bybit', 99, 100, 4_120) },
+  ];
+  const root = await mkdtemp(join(tmpdir(), 'pipeline-quality-config-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'orderbooks.jsonl');
+  await writeFile(
+    file,
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    'utf8',
+  );
+  const zeroFees: FeeConfig = {
+    bybit: { takerRate: 0 },
+    okx: { takerRate: 0 },
+  };
+  const looseEvents: OpportunityEvent[] = [];
+  const strictEvents: OpportunityEvent[] = [];
+  const loose = new MarketPipeline({
+    fees: zeroFees,
+    targetBaseSize: 0.2,
+    qualityConfig: {
+      minNetSpreadPercent: 0.03,
+      minNetPnlUsdt: 0.01,
+      minActiveDurationMs: 100,
+      maxSyncDiffMsForQualified: 250,
+    },
+    onEvent: (event) => looseEvents.push(event),
+  });
+  const strict = new MarketPipeline({
+    fees: zeroFees,
+    targetBaseSize: 0.2,
+    qualityConfig: {
+      minNetSpreadPercent: 2,
+      minNetPnlUsdt: 0.01,
+      minActiveDurationMs: 100,
+      maxSyncDiffMsForQualified: 250,
+    },
+    onEvent: (event) => strictEvents.push(event),
+  });
+
+  await replayOrderBooks({
+    filePath: file,
+    speed: 'max',
+    onOrderBook: (value, recordedAt) => {
+      loose.processOrderBook(value, recordedAt);
+      strict.processOrderBook(value, recordedAt);
+    },
+  });
+
+  assert.deepEqual(
+    looseEvents.map((event) => event.state),
+    ['DETECTED', 'QUALIFIED'],
+  );
+  assert.equal(strictEvents.length, 0);
+  assert.ok(loose.getMetricsSummary().qualifiedComparisons > 0);
+  assert.equal(strict.getMetricsSummary().qualifiedComparisons, 0);
+  assert.ok(strict.getMetricsSummary().rejectedSmallNetSpread > 0);
 });

@@ -1,4 +1,8 @@
 import type { OpportunityMetricsSummary } from '../metrics/opportunity-metrics.js';
+import {
+  OPPORTUNITY_QUALITY_CONFIG,
+  type OpportunityQualityConfig,
+} from '../config/opportunity.js';
 import type {
   FeeAwareComparison,
   FeeAwareComparisons,
@@ -8,6 +12,7 @@ import type {
   DepthComparisons,
 } from '../scanner/depth-comparator.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
+import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import type { BestQuote } from '../types/market.js';
 
 function signed(value: number, fractionDigits: number): string {
@@ -87,7 +92,44 @@ function printExecutionLeg(
   );
 }
 
-function printDepthDirection(comparison: DepthComparison): void {
+function passFail(value: boolean): string {
+  return value ? 'PASS' : 'FAIL';
+}
+
+function printQuality(
+  comparison: DepthComparison,
+  qualification: OpportunityQualification,
+  config: OpportunityQualityConfig,
+): void {
+  console.log('QUALITY');
+  console.log(
+    `Net spread: actual ${optionalSigned(comparison.estimatedNetSpreadPercent, 4, '%')}; ` +
+      `required >= ${config.minNetSpreadPercent.toFixed(4)}% — ` +
+      passFail(qualification.netSpreadOk),
+  );
+  console.log(
+    `Net PnL: actual ${optionalSigned(comparison.estimatedNetPnlAbsolute, 4, ' USDT')}; ` +
+      `required >= ${config.minNetPnlUsdt.toFixed(4)} USDT — ` +
+      passFail(qualification.netPnlOk),
+  );
+  console.log(
+    `Sync diff: actual ${comparison.receiveTimeDifferenceMs} ms; ` +
+      `required <= ${config.maxSyncDiffMsForQualified} ms — ` +
+      passFail(qualification.syncOk),
+  );
+  console.log(`Depth: ${passFail(qualification.depthOk)}`);
+  if (qualification.qualified) {
+    console.log('Quality status: QUALIFIED_CANDIDATE');
+  } else {
+    console.log(`Rejected: ${qualification.reasons.join(', ')}`);
+  }
+}
+
+function printDepthDirection(
+  comparison: DepthComparison,
+  qualification: OpportunityQualification,
+  qualityConfig: OpportunityQualityConfig,
+): void {
   console.log(
     `${comparison.buyExchange.toUpperCase()} -> ` +
       `${comparison.sellExchange.toUpperCase()}`,
@@ -114,15 +156,19 @@ function printDepthDirection(comparison: DepthComparison): void {
   );
   console.log(`Sync diff: ${comparison.receiveTimeDifferenceMs} ms`);
   console.log(`Status: ${comparison.status}`);
+  console.log('');
+  printQuality(comparison, qualification, qualityConfig);
 }
 
 export function printDepthComparisonSummary(
   comparisons: DepthComparisons,
+  qualifications: readonly [OpportunityQualification, OpportunityQualification],
+  qualityConfig: OpportunityQualityConfig = OPPORTUNITY_QUALITY_CONFIG,
 ): void {
   console.log('\nBTC/USDT DEPTH SIMULATION\n');
-  printDepthDirection(comparisons[0]);
+  printDepthDirection(comparisons[0], qualifications[0], qualityConfig);
   console.log('');
-  printDepthDirection(comparisons[1]);
+  printDepthDirection(comparisons[1], qualifications[1], qualityConfig);
 }
 
 export function printOpportunityEvent(event: OpportunityEvent): void {
@@ -132,6 +178,9 @@ export function printOpportunityEvent(event: OpportunityEvent): void {
     `Direction: ${event.buyExchange.toUpperCase()} -> ${event.sellExchange.toUpperCase()}`,
   );
   console.log(`State: ${event.state}`);
+  if (event.state === 'QUALIFIED') {
+    console.log(`Time to qualified: ${event.timeToQualifiedMs ?? 'N/A'} ms`);
+  }
   console.log(`Target: ${event.targetBaseSize.toFixed(6)} BTC`);
   console.log(`Buy VWAP: ${event.buyAverageExecutionPrice ?? 'N/A'}`);
   console.log(`Sell VWAP: ${event.sellAverageExecutionPrice ?? 'N/A'}`);
@@ -159,6 +208,8 @@ export function printOpportunityEvent(event: OpportunityEvent): void {
 
   if (event.state === 'DISAPPEARED') {
     console.log(`Lifetime: ${event.lifetimeMs ?? 0} ms`);
+    console.log(`Ever qualified: ${event.everQualified}`);
+    console.log(`Time to qualified: ${event.timeToQualifiedMs ?? 'N/A'} ms`);
     console.log(
       `Peak gross spread: ${signed(event.peakGrossSpreadAbsolute, 2)} USDT/BTC ` +
         `(${signed(event.peakGrossSpreadPercent, 4)}%)`,
@@ -185,6 +236,17 @@ export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
   console.log(
     `Executable net non-positive: ${summary.executableNetNonPositiveCount}`,
   );
+  console.log(`Net-positive comparisons: ${summary.totalNetPositiveComparisons}`);
+  console.log(`Qualified comparisons: ${summary.qualifiedComparisons}`);
+  console.log(`Qualification rejected: ${summary.qualificationRejectedCount}`);
+  console.log(`Rejected not net-positive: ${summary.rejectedNotNetPositive}`);
+  console.log(`Rejected small net spread: ${summary.rejectedSmallNetSpread}`);
+  console.log(`Rejected small net PnL: ${summary.rejectedSmallNetPnl}`);
+  console.log(`Rejected wide sync: ${summary.rejectedWideSync}`);
+  console.log(
+    `Rejected insufficient depth: ${summary.rejectedInsufficientDepth}`,
+  );
+  console.log(`Rejected stale: ${summary.rejectedStale}`);
   console.log(
     `Average buy slippage: ${metric(summary.averageBuySlippagePercent, 4)}%`,
   );
@@ -196,6 +258,14 @@ export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
   console.log(`Ever ACTIVE: ${summary.eventsEverActive}`);
   console.log(`Never ACTIVE: ${summary.eventsNeverActive}`);
   console.log(`Ever INVALID_SYNC: ${summary.invalidSyncEvents}`);
+  console.log(`Ever QUALIFIED: ${summary.eventsEverQualified}`);
+  console.log(`Never QUALIFIED: ${summary.eventsNeverQualified}`);
+  console.log(
+    `Time to qualified avg/P50/P95: ` +
+      `${metric(summary.averageTimeToQualifiedMs, 2)} / ` +
+      `${metric(summary.p50TimeToQualifiedMs, 0)} / ` +
+      `${metric(summary.p95TimeToQualifiedMs, 0)} ms`,
+  );
   console.log('');
   console.log('Lifetime:');
   console.log(`Avg: ${metric(summary.averageLifetimeMs, 2)} ms`);

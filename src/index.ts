@@ -49,7 +49,7 @@ const connections: ExchangeConnection[] = [
 const outputTimer = setInterval(() => {
   const snapshot = pipeline.getLatestDepthSnapshot();
   if (snapshot !== null) {
-    printDepthComparisonSummary(snapshot.comparisons);
+    printDepthComparisonSummary(snapshot.comparisons, snapshot.qualifications);
   }
 }, OUTPUT_INTERVAL_MS);
 

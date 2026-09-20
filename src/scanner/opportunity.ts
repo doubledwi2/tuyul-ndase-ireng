@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
+import {
+  OPPORTUNITY_QUALITY_CONFIG,
+  type OpportunityQualityConfig,
+} from '../config/opportunity.js';
 import type { DepthComparison } from './depth-comparator.js';
+import {
+  qualifyOpportunity,
+  type OpportunityQualification,
+  type QualificationReason,
+} from './opportunity-filter.js';
 
 export interface OpportunityEvent {
   id: string;
@@ -11,12 +20,17 @@ export interface OpportunityEvent {
     | 'DETECTED'
     | 'VALIDATING'
     | 'ACTIVE'
+    | 'QUALIFIED'
     | 'INVALID_SYNC'
     | 'DISAPPEARED';
   detectedAt: number;
   updatedAt: number;
   endedAt: number | null;
   lifetimeMs: number | null;
+  qualifiedAt: number | null;
+  timeToQualifiedMs: number | null;
+  everQualified: boolean;
+  currentQualificationReasons: QualificationReason[];
   initialGrossSpreadPercent: number;
   currentGrossSpreadPercent: number;
   peakGrossSpreadPercent: number;
@@ -46,7 +60,8 @@ export interface OpportunityEvent {
 
 interface TrackedOpportunity {
   event: OpportunityEvent;
-  consecutiveValidObservations: number;
+  validObservations: number;
+  validationStartedAt: number | null;
 }
 
 function eventKey(comparison: DepthComparison): string {
@@ -54,15 +69,20 @@ function eventKey(comparison: DepthComparison): string {
 }
 
 function snapshot(event: OpportunityEvent): OpportunityEvent {
-  return { ...event };
+  return {
+    ...event,
+    currentQualificationReasons: [...event.currentQualificationReasons],
+  };
 }
 
 function updateMetrics(
   event: OpportunityEvent,
   comparison: DepthComparison,
+  qualification: OpportunityQualification,
   timestamp: number,
 ): void {
   event.updatedAt = timestamp;
+  event.currentQualificationReasons = [...qualification.reasons];
   event.currentGrossSpreadPercent = comparison.bestGrossSpreadPercent;
   event.currentGrossSpreadAbsolute = comparison.bestGrossSpreadAbsolute;
   event.currentTradableSize = comparison.tradableSize;
@@ -80,8 +100,7 @@ function updateMetrics(
     comparison.estimatedNetPnlAbsolute !== null &&
     comparison.estimatedTotalFee !== null
   ) {
-    event.currentEstimatedNetSpreadPercent =
-      comparison.estimatedNetSpreadPercent;
+    event.currentEstimatedNetSpreadPercent = comparison.estimatedNetSpreadPercent;
     event.peakEstimatedNetSpreadPercent = Math.max(
       event.peakEstimatedNetSpreadPercent,
       comparison.estimatedNetSpreadPercent,
@@ -108,14 +127,16 @@ function updateMetrics(
 
 function createTrackedOpportunity(
   comparison: DepthComparison,
+  qualification: OpportunityQualification,
   timestamp: number,
 ): TrackedOpportunity {
   if (
+    !qualification.qualified ||
     comparison.estimatedNetSpreadPercent === null ||
     comparison.estimatedNetPnlAbsolute === null ||
     comparison.estimatedTotalFee === null
   ) {
-    throw new Error('Net-positive comparison is missing economic values.');
+    throw new Error('Qualified comparison is missing economic values.');
   }
   return {
     event: {
@@ -128,6 +149,10 @@ function createTrackedOpportunity(
       updatedAt: timestamp,
       endedAt: null,
       lifetimeMs: null,
+      qualifiedAt: null,
+      timeToQualifiedMs: null,
+      everQualified: false,
+      currentQualificationReasons: [],
       initialGrossSpreadPercent: comparison.bestGrossSpreadPercent,
       currentGrossSpreadPercent: comparison.bestGrossSpreadPercent,
       peakGrossSpreadPercent: comparison.bestGrossSpreadPercent,
@@ -154,22 +179,36 @@ function createTrackedOpportunity(
       everActive: false,
       everInvalidSync: false,
     },
-    consecutiveValidObservations: 1,
+    validObservations: 1,
+    validationStartedAt: timestamp,
   };
 }
 
-function stateForValidObservation(count: number): OpportunityEvent['state'] {
-  if (count === 1) {
-    return 'DETECTED';
+function resetValidationWindow(
+  tracked: TrackedOpportunity,
+  comparison: DepthComparison,
+  timestamp: number,
+): void {
+  tracked.validationStartedAt = timestamp;
+  tracked.validObservations = 1;
+  if (!tracked.event.everQualified) {
+    tracked.event.detectedAt = timestamp;
+    tracked.event.initialGrossSpreadPercent = comparison.bestGrossSpreadPercent;
+    tracked.event.initialGrossSpreadAbsolute = comparison.bestGrossSpreadAbsolute;
+    tracked.event.initialEstimatedNetSpreadPercent =
+      comparison.estimatedNetSpreadPercent ?? 0;
+    tracked.event.initialEstimatedNetPnlAbsolute =
+      comparison.estimatedNetPnlAbsolute ?? 0;
   }
-  if (count === 2) {
-    return 'VALIDATING';
-  }
-  return 'ACTIVE';
 }
 
 export class OpportunityTracker {
   private readonly activeEvents = new Map<string, TrackedOpportunity>();
+
+  constructor(
+    private readonly qualityConfig: OpportunityQualityConfig =
+      OPPORTUNITY_QUALITY_CONFIG,
+  ) {}
 
   getOpenEventCount(): number {
     return this.activeEvents.size;
@@ -178,22 +217,23 @@ export class OpportunityTracker {
   process(
     comparison: DepthComparison,
     timestamp: number,
+    qualification = qualifyOpportunity(comparison, this.qualityConfig),
   ): OpportunityEvent | null {
     const key = eventKey(comparison);
     const tracked = this.activeEvents.get(key);
 
-    if (comparison.status !== 'EXECUTABLE_NET_POSITIVE') {
+    if (!qualification.qualified) {
       if (tracked === undefined) {
         return null;
       }
 
-      updateMetrics(tracked.event, comparison, timestamp);
-      if (comparison.status === 'STALE') {
-        tracked.consecutiveValidObservations = 0;
+      updateMetrics(tracked.event, comparison, qualification, timestamp);
+      if (qualification.reasons.includes('STALE')) {
+        tracked.validObservations = 0;
+        tracked.validationStartedAt = null;
         if (tracked.event.state === 'INVALID_SYNC') {
           return null;
         }
-
         tracked.event.state = 'INVALID_SYNC';
         tracked.event.everInvalidSync = true;
         return snapshot(tracked.event);
@@ -207,25 +247,41 @@ export class OpportunityTracker {
     }
 
     if (tracked === undefined) {
-      const created = createTrackedOpportunity(comparison, timestamp);
+      const created = createTrackedOpportunity(
+        comparison,
+        qualification,
+        timestamp,
+      );
       this.activeEvents.set(key, created);
       return snapshot(created.event);
     }
 
-    updateMetrics(tracked.event, comparison, timestamp);
+    updateMetrics(tracked.event, comparison, qualification, timestamp);
+    if (tracked.validationStartedAt === null) {
+      resetValidationWindow(tracked, comparison, timestamp);
+      tracked.event.state = 'DETECTED';
+      return snapshot(tracked.event);
+    }
 
-    tracked.consecutiveValidObservations += 1;
-    const nextState = stateForValidObservation(
-      tracked.consecutiveValidObservations,
-    );
+    tracked.validObservations += 1;
+    const elapsedMs = timestamp - tracked.validationStartedAt;
+    const nextState: OpportunityEvent['state'] =
+      tracked.validObservations >= 2 &&
+      elapsedMs >= qualification.requiredActiveDurationMs
+        ? 'QUALIFIED'
+        : 'VALIDATING';
+
+    if (nextState === 'QUALIFIED' && !tracked.event.everQualified) {
+      tracked.event.qualifiedAt = timestamp;
+      tracked.event.timeToQualifiedMs = timestamp - tracked.event.detectedAt;
+      tracked.event.everQualified = true;
+      // Retained for compatibility with Phase 1/2 event metrics.
+      tracked.event.everActive = true;
+    }
     if (tracked.event.state === nextState) {
       return null;
     }
-
     tracked.event.state = nextState;
-    if (nextState === 'ACTIVE') {
-      tracked.event.everActive = true;
-    }
     return snapshot(tracked.event);
   }
 }
