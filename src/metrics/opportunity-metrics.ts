@@ -1,6 +1,13 @@
 import type { OpportunityEvent } from '../scanner/opportunity.js';
+import type { DepthComparison } from '../scanner/depth-comparator.js';
 
 export interface OpportunityMetricsSummary {
+  comparisonsTotal: number;
+  insufficientDepthCount: number;
+  executableNetPositiveCount: number;
+  executableNetNonPositiveCount: number;
+  averageBuySlippagePercent: number | null;
+  averageSellSlippagePercent: number | null;
   totalCompletedEvents: number;
   eventsEverActive: number;
   eventsNeverActive: number;
@@ -50,6 +57,12 @@ export function nearestRankPercentile(
 }
 
 export class OpportunityMetrics {
+  private comparisonsTotal = 0;
+  private insufficientDepthCount = 0;
+  private executableNetPositiveCount = 0;
+  private executableNetNonPositiveCount = 0;
+  private readonly buySlippages: number[] = [];
+  private readonly sellSlippages: number[] = [];
   private totalCompletedEvents = 0;
   private eventsEverActive = 0;
   private invalidSyncEvents = 0;
@@ -58,6 +71,23 @@ export class OpportunityMetrics {
   private readonly peakNetSpreads: number[] = [];
   private readonly peakNetPnls: number[] = [];
   private readonly peakSizes: number[] = [];
+
+  recordComparison(comparison: DepthComparison): void {
+    this.comparisonsTotal += 1;
+    if (comparison.status === 'INSUFFICIENT_DEPTH') {
+      this.insufficientDepthCount += 1;
+    } else if (comparison.status === 'EXECUTABLE_NET_POSITIVE') {
+      this.executableNetPositiveCount += 1;
+    } else if (comparison.status === 'EXECUTABLE_NET_ZERO_OR_NEGATIVE') {
+      this.executableNetNonPositiveCount += 1;
+    }
+    if (comparison.buyExecution.slippagePercent !== null) {
+      this.buySlippages.push(comparison.buyExecution.slippagePercent);
+    }
+    if (comparison.sellExecution.slippagePercent !== null) {
+      this.sellSlippages.push(comparison.sellExecution.slippagePercent);
+    }
+  }
 
   recordCompleted(event: OpportunityEvent): void {
     if (event.state !== 'DISAPPEARED' || event.lifetimeMs === null) {
@@ -80,6 +110,12 @@ export class OpportunityMetrics {
 
   getSummary(): OpportunityMetricsSummary {
     return {
+      comparisonsTotal: this.comparisonsTotal,
+      insufficientDepthCount: this.insufficientDepthCount,
+      executableNetPositiveCount: this.executableNetPositiveCount,
+      executableNetNonPositiveCount: this.executableNetNonPositiveCount,
+      averageBuySlippagePercent: average(this.buySlippages),
+      averageSellSlippagePercent: average(this.sellSlippages),
       totalCompletedEvents: this.totalCompletedEvents,
       eventsEverActive: this.eventsEverActive,
       eventsNeverActive: this.totalCompletedEvents - this.eventsEverActive,

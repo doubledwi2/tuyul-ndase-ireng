@@ -1,4 +1,3 @@
-import type { MarketQuoteRecord } from '../recording/market-recorder.js';
 import type { BestQuote } from '../types/market.js';
 import {
   loadMarketQuoteRecords,
@@ -29,8 +28,8 @@ function defaultSleep(milliseconds: number): Promise<void> {
 }
 
 function replayDelay(
-  previous: MarketQuoteRecord,
-  current: MarketQuoteRecord,
+  previous: { recordedAt: number },
+  current: { recordedAt: number },
   speed: ReplaySpeed,
 ): number {
   if (speed === 'max') {
@@ -41,15 +40,14 @@ function replayDelay(
   return speed === 'fast' ? originalDelay / 10 : originalDelay;
 }
 
-export async function replayMarketData(
-  options: ReplayMarketDataOptions,
+export async function replayTimedRecords<T extends { recordedAt: number }>(
+  records: AsyncIterable<T>,
+  speed: ReplaySpeed,
+  onRecord: (record: T) => void | Promise<void>,
+  sleep: ReplaySleep = defaultSleep,
 ): Promise<ReplayResult> {
-  const speed = options.speed ?? 'max';
-  const sleep = options.sleep ?? defaultSleep;
-  const records = loadMarketQuoteRecords(options.filePath, options.onWarning);
-  let previous: MarketQuoteRecord | null = null;
+  let previous: T | null = null;
   let processedRecords = 0;
-
   for await (const record of records) {
     if (previous !== null) {
       const delay = replayDelay(previous, record, speed);
@@ -57,11 +55,22 @@ export async function replayMarketData(
         await sleep(delay);
       }
     }
-
-    await options.onQuote(record.quote, record.recordedAt);
+    await onRecord(record);
     previous = record;
     processedRecords += 1;
   }
-
   return { processedRecords };
+}
+
+export async function replayMarketData(
+  options: ReplayMarketDataOptions,
+): Promise<ReplayResult> {
+  const speed = options.speed ?? 'max';
+  const sleep = options.sleep ?? defaultSleep;
+  return replayTimedRecords(
+    loadMarketQuoteRecords(options.filePath, options.onWarning),
+    speed,
+    (record) => options.onQuote(record.quote, record.recordedAt),
+    sleep,
+  );
 }

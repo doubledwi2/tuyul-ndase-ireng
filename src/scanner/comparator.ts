@@ -20,6 +20,22 @@ export interface SpreadComparison {
 
 export type CrossExchangeComparisons = [SpreadComparison, SpreadComparison];
 
+export function comparisonSyncStatus(
+  firstReceivedTimestamp: number,
+  secondReceivedTimestamp: number,
+  comparisonTimestamp: number,
+): SpreadComparison['status'] {
+  const receiveTimeDifferenceMs = Math.abs(
+    firstReceivedTimestamp - secondReceivedTimestamp,
+  );
+  const hasOldQuote =
+    comparisonTimestamp - firstReceivedTimestamp > MAX_QUOTE_AGE_MS ||
+    comparisonTimestamp - secondReceivedTimestamp > MAX_QUOTE_AGE_MS;
+  return receiveTimeDifferenceMs <= MAX_RECEIVE_DIFF_MS && !hasOldQuote
+    ? 'SYNC_OK'
+    : 'STALE';
+}
+
 function createComparison(
   buyQuote: BestQuote,
   sellQuote: BestQuote,
@@ -31,9 +47,6 @@ function createComparison(
   const receiveTimeDifferenceMs = Math.abs(
     buyQuote.receivedTimestamp - sellQuote.receivedTimestamp,
   );
-  const hasOldQuote =
-    comparisonTimestamp - buyQuote.receivedTimestamp > MAX_QUOTE_AGE_MS ||
-    comparisonTimestamp - sellQuote.receivedTimestamp > MAX_QUOTE_AGE_MS;
 
   return {
     symbol: 'BTC/USDT',
@@ -47,10 +60,11 @@ function createComparison(
     buyReceivedTimestamp: buyQuote.receivedTimestamp,
     sellReceivedTimestamp: sellQuote.receivedTimestamp,
     receiveTimeDifferenceMs,
-    status:
-      receiveTimeDifferenceMs <= MAX_RECEIVE_DIFF_MS && !hasOldQuote
-        ? 'SYNC_OK'
-        : 'STALE',
+    status: comparisonSyncStatus(
+      buyQuote.receivedTimestamp,
+      sellQuote.receivedTimestamp,
+      comparisonTimestamp,
+    ),
   };
 }
 

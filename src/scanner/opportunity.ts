@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { FeeAwareComparison } from './fee-model.js';
+import type { DepthComparison } from './depth-comparator.js';
 
 export interface OpportunityEvent {
   id: string;
@@ -30,6 +30,13 @@ export interface OpportunityEvent {
   currentEstimatedNetPnlAbsolute: number;
   peakEstimatedNetPnlAbsolute: number;
   currentEstimatedTotalFee: number;
+  targetBaseSize: number;
+  buyAverageExecutionPrice: number | null;
+  sellAverageExecutionPrice: number | null;
+  buySlippagePercent: number | null;
+  sellSlippagePercent: number | null;
+  simulatedBuyNotional: number | null;
+  simulatedSellNotional: number | null;
   currentTradableSize: number;
   peakTradableSize: number;
   currentReceiveTimeDifferenceMs: number;
@@ -42,7 +49,7 @@ interface TrackedOpportunity {
   consecutiveValidObservations: number;
 }
 
-function eventKey(comparison: FeeAwareComparison): string {
+function eventKey(comparison: DepthComparison): string {
   return `${comparison.symbol}:${comparison.buyExchange}->${comparison.sellExchange}`;
 }
 
@@ -52,34 +59,47 @@ function snapshot(event: OpportunityEvent): OpportunityEvent {
 
 function updateMetrics(
   event: OpportunityEvent,
-  comparison: FeeAwareComparison,
+  comparison: DepthComparison,
   timestamp: number,
 ): void {
   event.updatedAt = timestamp;
-  event.currentGrossSpreadPercent = comparison.grossSpreadPercent;
-  event.currentGrossSpreadAbsolute = comparison.grossSpreadAbsolute;
+  event.currentGrossSpreadPercent = comparison.bestGrossSpreadPercent;
+  event.currentGrossSpreadAbsolute = comparison.bestGrossSpreadAbsolute;
   event.currentTradableSize = comparison.tradableSize;
   event.currentReceiveTimeDifferenceMs = comparison.receiveTimeDifferenceMs;
   event.peakGrossSpreadPercent = Math.max(
     event.peakGrossSpreadPercent,
-    comparison.grossSpreadPercent,
+    comparison.bestGrossSpreadPercent,
   );
   event.peakGrossSpreadAbsolute = Math.max(
     event.peakGrossSpreadAbsolute,
-    comparison.grossSpreadAbsolute,
+    comparison.bestGrossSpreadAbsolute,
   );
-  event.currentEstimatedNetSpreadPercent =
-    comparison.estimatedNetSpreadPercent;
-  event.peakEstimatedNetSpreadPercent = Math.max(
-    event.peakEstimatedNetSpreadPercent,
-    comparison.estimatedNetSpreadPercent,
-  );
-  event.currentEstimatedNetPnlAbsolute = comparison.estimatedNetPnlAbsolute;
-  event.peakEstimatedNetPnlAbsolute = Math.max(
-    event.peakEstimatedNetPnlAbsolute,
-    comparison.estimatedNetPnlAbsolute,
-  );
-  event.currentEstimatedTotalFee = comparison.estimatedTotalFee;
+  if (
+    comparison.estimatedNetSpreadPercent !== null &&
+    comparison.estimatedNetPnlAbsolute !== null &&
+    comparison.estimatedTotalFee !== null
+  ) {
+    event.currentEstimatedNetSpreadPercent =
+      comparison.estimatedNetSpreadPercent;
+    event.peakEstimatedNetSpreadPercent = Math.max(
+      event.peakEstimatedNetSpreadPercent,
+      comparison.estimatedNetSpreadPercent,
+    );
+    event.currentEstimatedNetPnlAbsolute = comparison.estimatedNetPnlAbsolute;
+    event.peakEstimatedNetPnlAbsolute = Math.max(
+      event.peakEstimatedNetPnlAbsolute,
+      comparison.estimatedNetPnlAbsolute,
+    );
+    event.currentEstimatedTotalFee = comparison.estimatedTotalFee;
+  }
+  event.targetBaseSize = comparison.targetBaseSize;
+  event.buyAverageExecutionPrice = comparison.buyExecution.averageExecutionPrice;
+  event.sellAverageExecutionPrice = comparison.sellExecution.averageExecutionPrice;
+  event.buySlippagePercent = comparison.buyExecution.slippagePercent;
+  event.sellSlippagePercent = comparison.sellExecution.slippagePercent;
+  event.simulatedBuyNotional = comparison.simulatedBuyNotional;
+  event.simulatedSellNotional = comparison.simulatedSellNotional;
   event.peakTradableSize = Math.max(
     event.peakTradableSize,
     comparison.tradableSize,
@@ -87,9 +107,16 @@ function updateMetrics(
 }
 
 function createTrackedOpportunity(
-  comparison: FeeAwareComparison,
+  comparison: DepthComparison,
   timestamp: number,
 ): TrackedOpportunity {
+  if (
+    comparison.estimatedNetSpreadPercent === null ||
+    comparison.estimatedNetPnlAbsolute === null ||
+    comparison.estimatedTotalFee === null
+  ) {
+    throw new Error('Net-positive comparison is missing economic values.');
+  }
   return {
     event: {
       id: randomUUID(),
@@ -101,12 +128,12 @@ function createTrackedOpportunity(
       updatedAt: timestamp,
       endedAt: null,
       lifetimeMs: null,
-      initialGrossSpreadPercent: comparison.grossSpreadPercent,
-      currentGrossSpreadPercent: comparison.grossSpreadPercent,
-      peakGrossSpreadPercent: comparison.grossSpreadPercent,
-      initialGrossSpreadAbsolute: comparison.grossSpreadAbsolute,
-      currentGrossSpreadAbsolute: comparison.grossSpreadAbsolute,
-      peakGrossSpreadAbsolute: comparison.grossSpreadAbsolute,
+      initialGrossSpreadPercent: comparison.bestGrossSpreadPercent,
+      currentGrossSpreadPercent: comparison.bestGrossSpreadPercent,
+      peakGrossSpreadPercent: comparison.bestGrossSpreadPercent,
+      initialGrossSpreadAbsolute: comparison.bestGrossSpreadAbsolute,
+      currentGrossSpreadAbsolute: comparison.bestGrossSpreadAbsolute,
+      peakGrossSpreadAbsolute: comparison.bestGrossSpreadAbsolute,
       initialEstimatedNetSpreadPercent: comparison.estimatedNetSpreadPercent,
       currentEstimatedNetSpreadPercent: comparison.estimatedNetSpreadPercent,
       peakEstimatedNetSpreadPercent: comparison.estimatedNetSpreadPercent,
@@ -114,6 +141,13 @@ function createTrackedOpportunity(
       currentEstimatedNetPnlAbsolute: comparison.estimatedNetPnlAbsolute,
       peakEstimatedNetPnlAbsolute: comparison.estimatedNetPnlAbsolute,
       currentEstimatedTotalFee: comparison.estimatedTotalFee,
+      targetBaseSize: comparison.targetBaseSize,
+      buyAverageExecutionPrice: comparison.buyExecution.averageExecutionPrice,
+      sellAverageExecutionPrice: comparison.sellExecution.averageExecutionPrice,
+      buySlippagePercent: comparison.buyExecution.slippagePercent,
+      sellSlippagePercent: comparison.sellExecution.slippagePercent,
+      simulatedBuyNotional: comparison.simulatedBuyNotional,
+      simulatedSellNotional: comparison.simulatedSellNotional,
       currentTradableSize: comparison.tradableSize,
       peakTradableSize: comparison.tradableSize,
       currentReceiveTimeDifferenceMs: comparison.receiveTimeDifferenceMs,
@@ -142,38 +176,33 @@ export class OpportunityTracker {
   }
 
   process(
-    comparison: FeeAwareComparison,
+    comparison: DepthComparison,
     timestamp: number,
   ): OpportunityEvent | null {
     const key = eventKey(comparison);
     const tracked = this.activeEvents.get(key);
 
-    if (comparison.estimatedNetPnlAbsolute <= 0) {
+    if (comparison.status !== 'EXECUTABLE_NET_POSITIVE') {
       if (tracked === undefined) {
         return null;
       }
 
       updateMetrics(tracked.event, comparison, timestamp);
+      if (comparison.status === 'STALE') {
+        tracked.consecutiveValidObservations = 0;
+        if (tracked.event.state === 'INVALID_SYNC') {
+          return null;
+        }
+
+        tracked.event.state = 'INVALID_SYNC';
+        tracked.event.everInvalidSync = true;
+        return snapshot(tracked.event);
+      }
+
       tracked.event.state = 'DISAPPEARED';
       tracked.event.endedAt = timestamp;
       tracked.event.lifetimeMs = timestamp - tracked.event.detectedAt;
       this.activeEvents.delete(key);
-      return snapshot(tracked.event);
-    }
-
-    if (comparison.status === 'STALE') {
-      if (tracked === undefined) {
-        return null;
-      }
-
-      updateMetrics(tracked.event, comparison, timestamp);
-      tracked.consecutiveValidObservations = 0;
-      if (tracked.event.state === 'INVALID_SYNC') {
-        return null;
-      }
-
-      tracked.event.state = 'INVALID_SYNC';
-      tracked.event.everInvalidSync = true;
       return snapshot(tracked.event);
     }
 

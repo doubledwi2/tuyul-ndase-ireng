@@ -30,6 +30,13 @@ function completedEvent(
     currentEstimatedNetPnlAbsolute: 0,
     peakEstimatedNetPnlAbsolute: 1.2,
     currentEstimatedTotalFee: 0.2,
+    targetBaseSize: 0.01,
+    buyAverageExecutionPrice: 100.1,
+    sellAverageExecutionPrice: 100.2,
+    buySlippagePercent: 0.01,
+    sellSlippagePercent: -0.01,
+    simulatedBuyNotional: 1.001,
+    simulatedSellNotional: 1.002,
     currentTradableSize: 0.3,
     peakTradableSize: 0.5,
     currentReceiveTimeDifferenceMs: 10,
@@ -43,6 +50,9 @@ test('empty metrics are zero and null safe', () => {
   const summary = new OpportunityMetrics().getSummary();
 
   assert.equal(summary.totalCompletedEvents, 0);
+  assert.equal(summary.comparisonsTotal, 0);
+  assert.equal(summary.insufficientDepthCount, 0);
+  assert.equal(summary.averageBuySlippagePercent, null);
   assert.equal(summary.eventsEverActive, 0);
   assert.equal(summary.eventsNeverActive, 0);
   assert.equal(summary.invalidSyncEvents, 0);

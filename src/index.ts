@@ -3,10 +3,15 @@ import { connectBybit } from './exchanges/bybit.js';
 import { connectOkx } from './exchanges/okx.js';
 import { EventRecorder } from './recording/event-recorder.js';
 import { MarketRecorder } from './recording/market-recorder.js';
-import type { BestQuote, ExchangeConnection } from './types/market.js';
-import { isValidBestQuote } from './types/market.js';
+import { OrderBookRecorder } from './recording/orderbook-recorder.js';
+import type { ExchangeConnection } from './types/market.js';
 import {
-  printComparisonSummary,
+  deriveBestQuote,
+  isValidNormalizedOrderBook,
+  type NormalizedOrderBook,
+} from './types/orderbook.js';
+import {
+  printDepthComparisonSummary,
   printMetricsSummary,
   printOpportunityEvent,
 } from './ui/console.js';
@@ -15,35 +20,36 @@ const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;
 const eventRecorder = new EventRecorder();
 const marketRecorder = new MarketRecorder();
+const orderBookRecorder = new OrderBookRecorder();
 const pipeline = new MarketPipeline({
   eventRecorder,
   onEvent: printOpportunityEvent,
 });
 
-function receiveQuote(quote: BestQuote): void {
-  if (!isValidBestQuote(quote)) {
-    console.warn(`[MARKET] Invalid ${quote.exchange} quote ignored.`);
+function receiveOrderBook(orderBook: NormalizedOrderBook): void {
+  if (!isValidNormalizedOrderBook(orderBook)) {
+    console.warn(`[MARKET] Invalid ${orderBook.exchange} order book ignored.`);
     return;
   }
 
   const recordedAt = Date.now();
-  pipeline.processQuote(quote, recordedAt);
-  void marketRecorder.record(quote, recordedAt);
+  pipeline.processOrderBook(orderBook, recordedAt);
+  void orderBookRecorder.record(orderBook, recordedAt);
+  const quote = deriveBestQuote(orderBook);
+  if (quote !== null) {
+    void marketRecorder.record(quote, recordedAt);
+  }
 }
 
 const connections: ExchangeConnection[] = [
-  connectBybit(receiveQuote),
-  connectOkx(receiveQuote),
+  connectBybit(receiveOrderBook),
+  connectOkx(receiveOrderBook),
 ];
 
 const outputTimer = setInterval(() => {
-  const snapshot = pipeline.getLatestSnapshot();
+  const snapshot = pipeline.getLatestDepthSnapshot();
   if (snapshot !== null) {
-    printComparisonSummary(
-      snapshot.bybitQuote,
-      snapshot.okxQuote,
-      snapshot.feeAwareComparisons,
-    );
+    printDepthComparisonSummary(snapshot.comparisons);
   }
 }, OUTPUT_INTERVAL_MS);
 
@@ -66,7 +72,11 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     connection.close();
   }
 
-  await Promise.all([marketRecorder.flush(), pipeline.flush()]);
+  await Promise.all([
+    marketRecorder.flush(),
+    orderBookRecorder.flush(),
+    pipeline.flush(),
+  ]);
   process.exit(0);
 }
 

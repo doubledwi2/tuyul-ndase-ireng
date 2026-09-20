@@ -3,6 +3,10 @@ import type {
   FeeAwareComparison,
   FeeAwareComparisons,
 } from '../scanner/fee-model.js';
+import type {
+  DepthComparison,
+  DepthComparisons,
+} from '../scanner/depth-comparator.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { BestQuote } from '../types/market.js';
 
@@ -58,6 +62,69 @@ export function printComparisonSummary(
   printDirection(comparisons[1]);
 }
 
+function optionalSigned(
+  value: number | null,
+  fractionDigits: number,
+  suffix: string,
+): string {
+  return value === null ? 'N/A' : `${signed(value, fractionDigits)}${suffix}`;
+}
+
+function printExecutionLeg(
+  label: string,
+  exchange: string,
+  execution: DepthComparison['buyExecution'],
+): void {
+  console.log(`${label} ${exchange.toUpperCase()}`);
+  console.log(`Best price: ${execution.bestPrice ?? 'N/A'}`);
+  console.log(`VWAP: ${execution.averageExecutionPrice ?? 'N/A'}`);
+  console.log(
+    `Slippage: ${optionalSigned(execution.slippagePercent, 4, '%')}`,
+  );
+  console.log(
+    `Filled: ${execution.filledSize.toFixed(6)} / ` +
+      `${execution.requestedSize.toFixed(6)} BTC`,
+  );
+}
+
+function printDepthDirection(comparison: DepthComparison): void {
+  console.log(
+    `${comparison.buyExchange.toUpperCase()} -> ` +
+      `${comparison.sellExchange.toUpperCase()}`,
+  );
+  console.log(`Target: ${comparison.targetBaseSize.toFixed(6)} BTC`);
+  console.log('');
+  printExecutionLeg('BUY', comparison.buyExchange, comparison.buyExecution);
+  console.log('');
+  printExecutionLeg('SELL', comparison.sellExchange, comparison.sellExecution);
+  console.log('');
+  console.log(
+    `Gross PnL: ${optionalSigned(comparison.grossPnlAbsolute, 4, ' USDT')}`,
+  );
+  console.log(
+    `Estimated fees: ${optionalSigned(comparison.estimatedTotalFee, 4, ' USDT')}`,
+  );
+  console.log(
+    `Estimated net PnL: ` +
+      optionalSigned(comparison.estimatedNetPnlAbsolute, 4, ' USDT'),
+  );
+  console.log(
+    `Estimated net spread: ` +
+      optionalSigned(comparison.estimatedNetSpreadPercent, 4, '%'),
+  );
+  console.log(`Sync diff: ${comparison.receiveTimeDifferenceMs} ms`);
+  console.log(`Status: ${comparison.status}`);
+}
+
+export function printDepthComparisonSummary(
+  comparisons: DepthComparisons,
+): void {
+  console.log('\nBTC/USDT DEPTH SIMULATION\n');
+  printDepthDirection(comparisons[0]);
+  console.log('');
+  printDepthDirection(comparisons[1]);
+}
+
 export function printOpportunityEvent(event: OpportunityEvent): void {
   console.log('\n[EVENT]');
   console.log(`ID: ${event.id}`);
@@ -65,6 +132,15 @@ export function printOpportunityEvent(event: OpportunityEvent): void {
     `Direction: ${event.buyExchange.toUpperCase()} -> ${event.sellExchange.toUpperCase()}`,
   );
   console.log(`State: ${event.state}`);
+  console.log(`Target: ${event.targetBaseSize.toFixed(6)} BTC`);
+  console.log(`Buy VWAP: ${event.buyAverageExecutionPrice ?? 'N/A'}`);
+  console.log(`Sell VWAP: ${event.sellAverageExecutionPrice ?? 'N/A'}`);
+  console.log(
+    `Buy slippage: ${optionalSigned(event.buySlippagePercent, 4, '%')}`,
+  );
+  console.log(
+    `Sell slippage: ${optionalSigned(event.sellSlippagePercent, 4, '%')}`,
+  );
   console.log(
     `Gross spread: ${signed(event.currentGrossSpreadAbsolute, 2)} USDT/BTC ` +
       `(${signed(event.currentGrossSpreadPercent, 4)}%)`,
@@ -103,6 +179,19 @@ function metric(value: number | null, fractionDigits: number): string {
 
 export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
   console.log('\n[METRICS]');
+  console.log(`Depth comparisons: ${summary.comparisonsTotal}`);
+  console.log(`Insufficient depth: ${summary.insufficientDepthCount}`);
+  console.log(`Executable net positive: ${summary.executableNetPositiveCount}`);
+  console.log(
+    `Executable net non-positive: ${summary.executableNetNonPositiveCount}`,
+  );
+  console.log(
+    `Average buy slippage: ${metric(summary.averageBuySlippagePercent, 4)}%`,
+  );
+  console.log(
+    `Average sell slippage: ${metric(summary.averageSellSlippagePercent, 4)}%`,
+  );
+  console.log('');
   console.log(`Completed events: ${summary.totalCompletedEvents}`);
   console.log(`Ever ACTIVE: ${summary.eventsEverActive}`);
   console.log(`Never ACTIVE: ${summary.eventsNeverActive}`);

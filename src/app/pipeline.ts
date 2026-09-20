@@ -1,4 +1,5 @@
 import { FEES, type FeeConfig } from '../config/fees.js';
+import { TARGET_BTC_SIZE } from '../config/simulation.js';
 import {
   OpportunityMetrics,
   type OpportunityMetricsSummary,
@@ -13,10 +14,20 @@ import {
   type FeeAwareComparisons,
 } from '../scanner/fee-model.js';
 import {
+  compareOrderBooks,
+  legacyFeeComparisonToDepth,
+  type DepthComparison,
+  type DepthComparisons,
+} from '../scanner/depth-comparator.js';
+import {
   OpportunityTracker,
   type OpportunityEvent,
 } from '../scanner/opportunity.js';
 import { isValidBestQuote, type BestQuote } from '../types/market.js';
+import {
+  isValidNormalizedOrderBook,
+  type NormalizedOrderBook,
+} from '../types/orderbook.js';
 
 export interface PipelineSnapshot {
   bybitQuote: BestQuote;
@@ -25,17 +36,29 @@ export interface PipelineSnapshot {
   feeAwareComparisons: FeeAwareComparisons;
 }
 
+export interface DepthPipelineSnapshot {
+  bybitBook: NormalizedOrderBook;
+  okxBook: NormalizedOrderBook;
+  comparisons: DepthComparisons;
+}
+
 export interface MarketPipelineOptions {
   eventRecorder?: Pick<EventRecorder, 'record' | 'flush'>;
   onEvent?: (event: OpportunityEvent) => void;
   fees?: FeeConfig;
+  targetBaseSize?: number;
 }
 
 export class MarketPipeline {
   private readonly latestQuotes = new Map<BestQuote['exchange'], BestQuote>();
+  private readonly latestBooks = new Map<
+    NormalizedOrderBook['exchange'],
+    NormalizedOrderBook
+  >();
   private readonly opportunityTracker = new OpportunityTracker();
   private readonly opportunityMetrics = new OpportunityMetrics();
   private latestSnapshot: PipelineSnapshot | null = null;
+  private latestDepthSnapshot: DepthPipelineSnapshot | null = null;
 
   constructor(private readonly options: MarketPipelineOptions = {}) {}
 
@@ -75,8 +98,58 @@ export class MarketPipeline {
       ],
     };
     this.latestSnapshot = pipelineSnapshot;
+    this.processOpportunityComparisons(
+      pipelineSnapshot.feeAwareComparisons.map(legacyFeeComparisonToDepth),
+      processingTimestamp,
+      false,
+    );
 
-    for (const comparison of pipelineSnapshot.feeAwareComparisons) {
+    return pipelineSnapshot;
+  }
+
+  processOrderBook(
+    orderBook: NormalizedOrderBook,
+    processingTimestamp = Date.now(),
+  ): DepthPipelineSnapshot | null {
+    if (!isValidNormalizedOrderBook(orderBook)) {
+      return null;
+    }
+    this.latestBooks.set(orderBook.exchange, orderBook);
+    const bybitBook = this.latestBooks.get('bybit');
+    const okxBook = this.latestBooks.get('okx');
+    const comparisons = compareOrderBooks(
+      bybitBook,
+      okxBook,
+      this.options.targetBaseSize ?? TARGET_BTC_SIZE,
+      this.options.fees ?? FEES,
+      processingTimestamp,
+    );
+    if (
+      bybitBook === undefined ||
+      okxBook === undefined ||
+      comparisons === null
+    ) {
+      return null;
+    }
+    const snapshot: DepthPipelineSnapshot = {
+      bybitBook,
+      okxBook,
+      comparisons,
+    };
+    this.latestDepthSnapshot = snapshot;
+    this.processOpportunityComparisons(comparisons, processingTimestamp, true);
+    return snapshot;
+  }
+
+  private processOpportunityComparisons(
+    comparisons: readonly DepthComparison[],
+    processingTimestamp: number,
+    recordComparisonMetrics: boolean,
+  ): void {
+    for (const comparison of comparisons) {
+      if (recordComparisonMetrics) {
+        this.opportunityMetrics.recordComparison(comparison);
+      }
       const event = this.opportunityTracker.process(
         comparison,
         processingTimestamp,
@@ -91,12 +164,14 @@ export class MarketPipeline {
       void this.options.eventRecorder?.record(event, processingTimestamp);
       this.options.onEvent?.(event);
     }
-
-    return pipelineSnapshot;
   }
 
   getLatestSnapshot(): PipelineSnapshot | null {
     return this.latestSnapshot;
+  }
+
+  getLatestDepthSnapshot(): DepthPipelineSnapshot | null {
+    return this.latestDepthSnapshot;
   }
 
   getMetricsSummary(): OpportunityMetricsSummary {

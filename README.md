@@ -1,50 +1,56 @@
 # tuyul-ndase-ireng
 
-Fee-Aware Opportunity Model v0.2.0 adalah Phase 2.0 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, merekam quote normalized, menghitung gross spread serta estimated net result setelah trading fee, dan dapat memutar ulang dataset melalui pipeline yang sama.
+Order Book Depth + Slippage Simulation v0.2.1 adalah Phase 2.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT dari Bybit Spot dan OKX Spot, mensimulasikan hypothetical taker execution, lalu menghitung estimated net result berdasarkan VWAP dan fee.
 
 Aplikasi ini tidak memakai API key atau autentikasi, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution. Persistence hanya berupa file JSONL lokal untuk normalized market quote serta perubahan state opportunity; tidak ada database.
 
 ## Data source
 
 - Bybit Public WebSocket V5 Spot: `wss://stream.bybit.com/v5/public/spot`
-  - Topic: `orderbook.1.BTCUSDT`
+  - Topic: `orderbook.50.BTCUSDT`
 - OKX Public WebSocket: `wss://ws.okx.com:8443/ws/v5/public`
-  - Channel: `bbo-tbt`, instrument: `BTC-USDT`
+  - Channel: `books`, instrument: `BTC-USDT`
 
-OKX `bbo-tbt` dipilih karena merupakan feed public tick-by-tick depth 1 yang langsung menyediakan best bid/ask beserta size dan tidak memerlukan autentikasi. Kedua feed dinormalisasi ke model `BestQuote` yang sama. Quote dengan price atau size non-positif maupun `ask < bid` diabaikan.
+Bybit depth 50 menyediakan snapshot awal lalu delta public sekitar setiap 20 ms. OKX `books` menyediakan snapshot 400 level lalu incremental update public sekitar setiap 100 ms tanpa login. Channel OKX `books50-l2-tbt` tidak dipakai karena dokumentasi terbaru mensyaratkan login dan VIP4. State OKX direkonstruksi hingga depth yang diterima, lalu hanya top 50 per sisi dinormalisasi untuk pipeline dan dataset.
+
+Pada kedua adapter, snapshot mengganti local book. Delta mengubah atau menambah price level, sedangkan size nol menghapus level. OKX memverifikasi continuity dengan `seqId/prevSeqId`; sequence gap memicu reconnect agar snapshot baru diperoleh. Checksum OKX tidak digunakan karena sudah deprecated. Hasil normalized selalu memiliki bid descending, ask ascending, nilai finite positif, dan tidak crossed.
 
 Output terminal dibatasi sekitar satu kali setiap 500 ms agar tetap mudah dibaca, tanpa mengubah timestamp asli ketika message diterima.
 
-## Normalized quote dan timestamp
+## Normalized order book, quote, dan timestamp
 
-Setiap quote berisi `bid`, `bidSize`, `ask`, dan `askSize`, ditambah tiga timestamp:
+Model `NormalizedOrderBook` berisi array `bids` dan `asks` dengan pasangan numeric `price`/`size`, ditambah tiga timestamp:
 
 - `exchangeTimestamp`: timestamp update yang dikirim exchange.
 - `matchingEngineTimestamp`: waktu matching engine menghasilkan order book, jika feed menyediakannya.
 - `receivedTimestamp`: `Date.now()` yang diambil segera saat message diterima, sebelum parsing.
 
-Bybit menyediakan `ts` sebagai `exchangeTimestamp` dan `cts` sebagai `matchingEngineTimestamp`. Pada OKX `bbo-tbt`, dokumentasi exchange menyatakan satu-satunya field `ts` adalah waktu matching engine menghasilkan book. Karena itu nilai sumber yang sama digunakan untuk `exchangeTimestamp` dan `matchingEngineTimestamp`.
+Bybit menyediakan `ts` sebagai `exchangeTimestamp` dan `cts` sebagai `matchingEngineTimestamp`. Pada OKX `books`, `ts` dipakai sebagai `exchangeTimestamp`; feed ini tidak mendefinisikannya sebagai matching-engine timestamp yang ekuivalen dengan Bybit `cts`, sehingga `matchingEngineTimestamp` diisi `null`.
 
-`matchingEngineTimestamp` tetap nullable dalam model bersama. Nilainya `null` jika suatu exchange atau message tidak menyediakan timestamp matching-engine yang relevan; collector tidak membuat timestamp pengganti.
+`matchingEngineTimestamp` tetap nullable; collector tidak membuat timestamp pengganti. `BestQuote` tetap dipertahankan dan diturunkan dari level pertama normalized book untuk compatibility serta replay dataset lama.
 
-## Cross-exchange comparison
+## Depth simulation dan fee-aware comparison
 
-Comparator memakai latest valid quote dari kedua exchange dan menghitung dua arah:
+Pipeline memakai latest valid order book dari kedua exchange dan mensimulasikan dua arah:
 
 - Buy Bybit pada ask, lalu sell OKX pada bid.
 - Buy OKX pada ask, lalu sell Bybit pada bid.
 
-Formula yang digunakan:
+Ukuran simulasi baseline disimpan di `src/config/simulation.ts`:
 
 ```text
-grossSpreadAbsolute = sellPrice - buyPrice
-grossSpreadPercent = ((sellPrice - buyPrice) / buyPrice) * 100
-tradableSize = min(buyExchange.askSize, sellExchange.bidSize)
+TARGET_BTC_SIZE = 0.01 BTC
 ```
 
-`tradableSize` hanya menunjukkan size teoritis yang tersedia pada best level. Belum ada simulasi multi-level order book.
+Nilai tersebut hanya baseline engineering untuk hypothetical execution, bukan rekomendasi ukuran trading. BUY mengonsumsi ask dari harga terendah ke tertinggi; SELL mengonsumsi bid dari harga tertinggi ke terendah. Jika size tersedia, execution price dihitung sebagai volume-weighted average price:
 
-## Fee-aware analysis
+```text
+VWAP = sum(fillSize * levelPrice) / sum(fillSize)
+slippageAbsolute = VWAP - bestPrice
+slippagePercent = (slippageAbsolute / bestPrice) * 100
+```
+
+Dengan definisi tersebut, BUY slippage biasanya positif dan SELL slippage biasanya negatif. Best price hanya harga level pertama; VWAP mencerminkan seluruh level yang benar-benar dikonsumsi oleh target size.
 
 Baseline Spot taker fee disimpan eksplisit di `src/config/fees.ts` sebagai decimal fraction:
 
@@ -53,28 +59,27 @@ Baseline Spot taker fee disimpan eksplisit di `src/config/fees.ts` sebagai decim
 
 Fee aktual dapat berbeda menurut VIP tier, region, promotion, dan rate khusus account. Config ini adalah baseline engineering, bukan klaim rate yang berlaku untuk semua account.
 
-Untuk setiap arah, model menghitung:
+Jika kedua leg fully filled, model memakai simulated notional aktual:
 
 ```text
-buyNotional = buyPrice * tradableSize
-sellNotional = sellPrice * tradableSize
-estimatedBuyFee = buyNotional * buyTakerRate
-estimatedSellFee = sellNotional * sellTakerRate
+simulatedBuyNotional = sum(BUY fillSize * fillPrice)
+simulatedSellNotional = sum(SELL fillSize * fillPrice)
+estimatedBuyFee = simulatedBuyNotional * buyTakerRate
+estimatedSellFee = simulatedSellNotional * sellTakerRate
 estimatedTotalFee = estimatedBuyFee + estimatedSellFee
-grossPnlAbsolute = (sellPrice - buyPrice) * tradableSize
+grossPnlAbsolute = simulatedSellNotional - simulatedBuyNotional
 estimatedNetPnlAbsolute = grossPnlAbsolute - estimatedTotalFee
-estimatedNetSpreadPercent = (estimatedNetPnlAbsolute / buyNotional) * 100
+estimatedNetSpreadPercent = (estimatedNetPnlAbsolute / simulatedBuyNotional) * 100
 ```
 
-`grossSpreadAbsolute` adalah selisih harga per BTC, sedangkan `grossPnlAbsolute` memperhitungkan `tradableSize`. Semua nilai net memakai istilah **estimated** karena belum ada slippage, simulasi multi-level depth, atau jaminan full execution.
+Status depth comparison:
 
-Fee status yang ditampilkan adalah:
-
-- `NET_POSITIVE`: data `SYNC_OK` dan estimated net PnL lebih dari nol.
-- `NET_ZERO_OR_NEGATIVE`: data `SYNC_OK` tetapi estimated net PnL tidak positif.
+- `EXECUTABLE_NET_POSITIVE`: sync valid, kedua leg fully filled, estimated net PnL positif.
+- `EXECUTABLE_NET_ZERO_OR_NEGATIVE`: sync valid, kedua leg fully filled, estimated net PnL tidak positif.
+- `INSUFFICIENT_DEPTH`: salah satu leg tidak dapat memenuhi `TARGET_BTC_SIZE`.
 - `STALE`: comparison tidak memenuhi baseline synchronization.
 
-`NET_POSITIVE` belum berarti order dapat benar-benar dieksekusi atau menghasilkan realized profit.
+Istilah executable hanya berarti snapshot order book secara teoritis cukup untuk target size. Ini bukan jaminan real fill: market dapat berubah antara observasi dan kedatangan order, dan aplikasi tidak mengirim order apa pun.
 
 ### Baseline synchronization
 
@@ -88,17 +93,17 @@ Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang t
 
 ## Opportunity event lifecycle
 
-Mulai Phase 2, candidate opportunity hanya dibuat ketika data berstatus `SYNC_OK` dan `estimatedNetPnlAbsolute > 0`. Gross spread positif yang habis oleh fee tetap terlihat di comparison terminal sebagai `NET_ZERO_OR_NEGATIVE`, tetapi tidak membuat `OpportunityEvent`.
+Mulai Phase 2.1, candidate opportunity hanya dibuat untuk status `EXECUTABLE_NET_POSITIVE`. Best-price spread yang terlihat positif tetapi berubah non-positive setelah VWAP dan fee tetap ditampilkan, tetapi tidak membuat `OpportunityEvent`.
 
 Setiap arah mempunyai event independen dengan key seperti `BTC/USDT:bybit->okx`. Event ID yang sama dipertahankan sepanjang satu lifecycle agar candidate dapat dilacak dari awal sampai berakhir. Setelah event `DISAPPEARED`, kemunculan baru pada arah yang sama mendapat ID baru.
 
-Untuk estimated net-positive comparison yang `SYNC_OK`, state dipromosikan berdasarkan observasi valid berturut-turut tanpa timer tambahan:
+Untuk simulated executable net-positive comparison, state dipromosikan berdasarkan observasi valid berturut-turut tanpa timer tambahan:
 
 ```text
 observasi valid #1  DETECTED
 observasi valid #2  VALIDATING
 observasi valid #3+ ACTIVE
-estimated net <= 0  DISAPPEARED
+net <= 0/depth kurang  DISAPPEARED
 ```
 
 Data stale tidak membuat event baru. Jika event yang sudah hidup kemudian menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data kembali `SYNC_OK` dan estimated net kembali positif, urutan observasi valid dimulai lagi dari `DETECTED` dengan event ID yang sama.
@@ -107,7 +112,15 @@ Selama event hidup, collector memperbarui current dan peak gross spread, estimat
 
 ## Raw market recording
 
-Dalam live mode, setiap `BestQuote` valid dari kedua exchange disimpan secara append-only ke:
+Dalam live mode, setiap normalized top-50 order book state yang benar-benar dipakai pipeline disimpan append-only ke:
+
+```text
+data/orderbooks.jsonl
+```
+
+Satu baris berisi `{ "recordedAt": number, "orderBook": NormalizedOrderBook }`. Dataset menyimpan state normalized yang sudah sorted, bukan raw WebSocket payload atau internal map. Karena setiap record merupakan state lengkap yang dipakai downstream, replay tidak perlu menebak ulang delta exchange.
+
+Untuk compatibility, derived `BestQuote` juga tetap disimpan ke:
 
 ```text
 data/market-quotes.jsonl
@@ -119,7 +132,7 @@ Satu baris berisi satu object JSON dengan format:
 {"recordedAt": 1700000000001, "quote": {"exchange": "bybit", "symbol": "BTC/USDT", "bid": 60000, "bidSize": 1.2, "ask": 60001, "askSize": 0.8, "exchangeTimestamp": 1700000000000, "matchingEngineTimestamp": 1699999999999, "receivedTimestamp": 1700000000000}}
 ```
 
-Yang direkam adalah quote normalized, bukan raw WebSocket payload. Seluruh field `BestQuote` dipertahankan. `recordedAt` adalah waktu recorder menerima quote di pipeline live. Write diserialisasi untuk menjaga urutan, dan shutdown menunggu write yang masih pending.
+Format `market-quotes.jsonl` lama tidak berubah. Write kedua recorder diserialisasi untuk menjaga urutan, dan shutdown menunggu seluruh write yang masih pending.
 
 ## Event recording
 
@@ -135,7 +148,13 @@ File runtime JSONL di bawah `data/` diabaikan Git. Jika penulisan gagal, recorde
 
 ## Replay
 
-Dataset raw dapat diputar ulang tanpa membuat koneksi WebSocket:
+Order book dataset dapat diputar melalui depth pipeline yang sama tanpa membuat koneksi WebSocket:
+
+```bash
+npm run replay:book -- --file data/orderbooks.jsonl --speed max
+```
+
+Replay `BestQuote` lama tetap tersedia:
 
 ```bash
 npm run replay -- --file data/market-quotes.jsonl --speed max
@@ -147,15 +166,23 @@ Pilihan speed:
 - `fast`: mempercepat jeda sekitar 10x.
 - `max`: tanpa artificial delay, tetapi urutan file tetap dipertahankan.
 
-Default speed adalah `max`, dan default file adalah `data/market-quotes.jsonl`. Scheduling sengaja memakai `recordedAt`, bukan exchange timestamp, agar arrival sequence lokal dapat direproduksi. Blank line dilewati; record malformed atau invalid diberi warning dan dilewati tanpa menghentikan seluruh replay.
+Default speed adalah `max`. Default input `replay:book` adalah `data/orderbooks.jsonl`, sedangkan replay lama memakai `data/market-quotes.jsonl`. Scheduling memakai `recordedAt`, bukan exchange timestamp, agar arrival sequence lokal dapat direproduksi. Blank line dilewati; record malformed atau invalid diberi warning dan dilewati tanpa menghentikan seluruh replay.
 
-Live dan replay memanggil `MarketPipeline` yang sama untuk update latest quote, comparison, opportunity lifecycle, event recording, dan metrics. Waktu logis pipeline saat replay juga menggunakan `recordedAt`, sehingga pilihan speed tidak mengubah hasil downstream untuk dataset dan konfigurasi yang sama. UUID event boleh berbeda antar-run.
+Live dan order book replay memanggil `MarketPipeline.processOrderBook()` yang sama untuk depth simulation, fees, lifecycle, event recording, dan metrics. Waktu logis replay menggunakan `recordedAt`, sehingga speed tidak mengubah fill, VWAP, slippage, fee, net result, atau state transition. UUID event boleh berbeda antar-run.
 
 Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Setiap run memakai output unik berbentuk `data/replays/<timestamp>-<short-id>/opportunity-events.jsonl`, sehingga hasil antar-run dan live event tidak tercampur. Path aktual dicetak pada akhir replay. Jika tidak ada event, file tersebut tidak perlu dibuat. Event yang masih terbuka dilaporkan jumlahnya dan tidak dipaksa menjadi `DISAPPEARED`.
 
-Raw replay dataset tetap hanya menyimpan `BestQuote`; formatnya tidak berubah dari Phase 1.5. Fee dihitung downstream menggunakan config saat replay, sehingga dataset yang sama dapat diuji ulang dengan fee berbeda. Hasilnya tetap bukan bukti profitability atau executability karena slippage dan depth di luar best level belum dihitung.
+Raw order book dan quote input tidak pernah ditulis ulang saat replay. Fee, target size, dan economics dihitung downstream, sehingga dataset order book yang sama dapat diuji ulang dengan config berbeda. Replay quote lama tetap top-of-book-only; gunakan `replay:book` untuk hasil Phase 2.1.
 
 ## Opportunity metrics
+
+Session metrics comparison depth mencakup:
+
+- Total comparison.
+- Count `INSUFFICIENT_DEPTH`.
+- Count `EXECUTABLE_NET_POSITIVE`.
+- Count `EXECUTABLE_NET_ZERO_OR_NEGATIVE`.
+- Average BUY dan SELL slippage percent.
 
 Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
@@ -194,6 +221,7 @@ Hentikan aplikasi dengan `Ctrl+C`. Handler `SIGINT` dan `SIGTERM` akan menutup k
 
 Pada live mode:
 
+- Normalized order book states: `data/orderbooks.jsonl`
 - Raw normalized quote: `data/market-quotes.jsonl`
 - Opportunity state changes: `data/opportunity-events.jsonl`
 
@@ -218,6 +246,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 2.0
+## Scope Phase 2.1
 
-Scope versi ini sengaja terbatas pada market data, perekaman/replay quote, comparison top-of-book, estimasi taker fee, lifecycle estimated net-positive candidate, persistence JSONL lokal, dan metrics dasar. Belum ada slippage model, multi-level execution, balance, transfer, private API, database, REST API, dashboard, paper trading, atau fitur eksekusi order.
+Scope versi ini terbatas pada public multi-level order book, local reconstruction, hypothetical target-size execution, VWAP/slippage, estimated taker fees, replay, lifecycle, dan metrics. Belum ada real order execution, balance, transfer, private API, database, dashboard, atau paper trading.
