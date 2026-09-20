@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import type { FeeConfig } from '../config/fees.js';
 import type { MarketQuoteRecord } from '../recording/market-recorder.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { BestQuote } from '../types/market.js';
@@ -76,4 +77,58 @@ test('direct and replay pipelines produce equivalent opportunity transitions', a
   );
   assert.deepEqual(replay.getMetricsSummary(), direct.getMetricsSummary());
   assert.equal(replay.getOpenEventCount(), 0);
+});
+
+test('replaying identical raw quotes with different fees can change candidacy', async (context) => {
+  const records: MarketQuoteRecord[] = [
+    { recordedAt: 2_000, quote: quote('bybit', 99.9, 100, 2_000) },
+    { recordedAt: 2_010, quote: quote('okx', 100.1, 100.2, 2_010) },
+  ];
+  const root = await mkdtemp(join(tmpdir(), 'pipeline-fees-'));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'quotes.jsonl');
+  await writeFile(
+    file,
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    'utf8',
+  );
+  const baselineEvents: OpportunityEvent[] = [];
+  const zeroFeeEvents: OpportunityEvent[] = [];
+  const zeroFees: FeeConfig = {
+    bybit: { takerRate: 0 },
+    okx: { takerRate: 0 },
+  };
+  const baseline = new MarketPipeline({
+    onEvent: (event) => baselineEvents.push(event),
+  });
+  const zeroFee = new MarketPipeline({
+    fees: zeroFees,
+    onEvent: (event) => zeroFeeEvents.push(event),
+  });
+
+  await replayMarketData({
+    filePath: file,
+    speed: 'max',
+    onQuote: (value, recordedAt) => {
+      baseline.processQuote(value, recordedAt);
+    },
+  });
+  await replayMarketData({
+    filePath: file,
+    speed: 'max',
+    onQuote: (value, recordedAt) => {
+      zeroFee.processQuote(value, recordedAt);
+    },
+  });
+
+  const baselineComparison = baseline.getLatestSnapshot()?.feeAwareComparisons[0];
+  const zeroFeeComparison = zeroFee.getLatestSnapshot()?.feeAwareComparisons[0];
+  assert.equal(
+    baselineComparison?.grossSpreadAbsolute,
+    zeroFeeComparison?.grossSpreadAbsolute,
+  );
+  assert.equal(baselineComparison?.feeStatus, 'NET_ZERO_OR_NEGATIVE');
+  assert.equal(zeroFeeComparison?.feeStatus, 'NET_POSITIVE');
+  assert.equal(baselineEvents.length, 0);
+  assert.deepEqual(zeroFeeEvents.map((event) => event.state), ['DETECTED']);
 });

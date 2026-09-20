@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Raw Market Recorder + Replay Engine v0.1.5 adalah Phase 1.5 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, merekam quote normalized, membandingkan top-of-book kedua exchange, melacak lifecycle candidate gross-spread, dan dapat memutar ulang dataset melalui pipeline yang sama.
+Fee-Aware Opportunity Model v0.2.0 adalah Phase 2.0 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, merekam quote normalized, menghitung gross spread serta estimated net result setelah trading fee, dan dapat memutar ulang dataset melalui pipeline yang sama.
 
 Aplikasi ini tidak memakai API key atau autentikasi, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution. Persistence hanya berupa file JSONL lokal untuk normalized market quote serta perubahan state opportunity; tidak ada database.
 
@@ -42,7 +42,39 @@ grossSpreadPercent = ((sellPrice - buyPrice) / buyPrice) * 100
 tradableSize = min(buyExchange.askSize, sellExchange.bidSize)
 ```
 
-`tradableSize` hanya menunjukkan size teoritis yang tersedia pada best level. Belum ada simulasi multi-level order book. Gross spread juga belum memperhitungkan fee atau slippage dan tidak boleh dianggap sebagai profit maupun bukti bahwa opportunity dapat dieksekusi.
+`tradableSize` hanya menunjukkan size teoritis yang tersedia pada best level. Belum ada simulasi multi-level order book.
+
+## Fee-aware analysis
+
+Baseline Spot taker fee disimpan eksplisit di `src/config/fees.ts` sebagai decimal fraction:
+
+- Bybit: `0.001` atau 0.10%.
+- OKX: `0.001` atau 0.10%.
+
+Fee aktual dapat berbeda menurut VIP tier, region, promotion, dan rate khusus account. Config ini adalah baseline engineering, bukan klaim rate yang berlaku untuk semua account.
+
+Untuk setiap arah, model menghitung:
+
+```text
+buyNotional = buyPrice * tradableSize
+sellNotional = sellPrice * tradableSize
+estimatedBuyFee = buyNotional * buyTakerRate
+estimatedSellFee = sellNotional * sellTakerRate
+estimatedTotalFee = estimatedBuyFee + estimatedSellFee
+grossPnlAbsolute = (sellPrice - buyPrice) * tradableSize
+estimatedNetPnlAbsolute = grossPnlAbsolute - estimatedTotalFee
+estimatedNetSpreadPercent = (estimatedNetPnlAbsolute / buyNotional) * 100
+```
+
+`grossSpreadAbsolute` adalah selisih harga per BTC, sedangkan `grossPnlAbsolute` memperhitungkan `tradableSize`. Semua nilai net memakai istilah **estimated** karena belum ada slippage, simulasi multi-level depth, atau jaminan full execution.
+
+Fee status yang ditampilkan adalah:
+
+- `NET_POSITIVE`: data `SYNC_OK` dan estimated net PnL lebih dari nol.
+- `NET_ZERO_OR_NEGATIVE`: data `SYNC_OK` tetapi estimated net PnL tidak positif.
+- `STALE`: comparison tidak memenuhi baseline synchronization.
+
+`NET_POSITIVE` belum berarti order dapat benar-benar dieksekusi atau menghasilkan realized profit.
 
 ### Baseline synchronization
 
@@ -56,22 +88,22 @@ Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang t
 
 ## Opportunity event lifecycle
 
-Candidate opportunity hanya berarti `grossSpreadPercent > 0`. Ini bukan berarti profitable karena fee dan slippage belum dihitung.
+Mulai Phase 2, candidate opportunity hanya dibuat ketika data berstatus `SYNC_OK` dan `estimatedNetPnlAbsolute > 0`. Gross spread positif yang habis oleh fee tetap terlihat di comparison terminal sebagai `NET_ZERO_OR_NEGATIVE`, tetapi tidak membuat `OpportunityEvent`.
 
 Setiap arah mempunyai event independen dengan key seperti `BTC/USDT:bybit->okx`. Event ID yang sama dipertahankan sepanjang satu lifecycle agar candidate dapat dilacak dari awal sampai berakhir. Setelah event `DISAPPEARED`, kemunculan baru pada arah yang sama mendapat ID baru.
 
-Untuk comparison `SYNC_OK`, state dipromosikan berdasarkan observasi valid berturut-turut tanpa timer tambahan:
+Untuk estimated net-positive comparison yang `SYNC_OK`, state dipromosikan berdasarkan observasi valid berturut-turut tanpa timer tambahan:
 
 ```text
 observasi valid #1  DETECTED
 observasi valid #2  VALIDATING
 observasi valid #3+ ACTIVE
-spread <= 0         DISAPPEARED
+estimated net <= 0  DISAPPEARED
 ```
 
-`INVALID_SYNC` berarti gross spread positif terlihat, tetapi data tidak memenuhi baseline synchronization. Saat data kembali `SYNC_OK`, urutan observasi valid dimulai lagi dari `DETECTED` dengan event ID yang sama.
+Data stale tidak membuat event baru. Jika event yang sudah hidup kemudian menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data kembali `SYNC_OK` dan estimated net kembali positif, urutan observasi valid dimulai lagi dari `DETECTED` dengan event ID yang sama.
 
-Selama event hidup, collector memperbarui current dan peak gross spread serta peak tradable size tanpa menjumlahkan size antar-tick. Lifetime baru dihitung ketika event menjadi `DISAPPEARED`. State `ACTIVE` tetap bukan jaminan bahwa candidate executable atau profitable.
+Selama event hidup, collector memperbarui current dan peak gross spread, estimated net spread, estimated net PnL, estimated total fee, serta peak tradable size. Peak memakai maksimum dan tidak menjumlahkan observasi antar-tick. Lifetime baru dihitung ketika event menjadi `DISAPPEARED`. State `ACTIVE` tetap bukan jaminan bahwa candidate executable atau profitable.
 
 ## Raw market recording
 
@@ -97,9 +129,9 @@ Setiap perubahan state event disimpan secara append-only ke:
 data/opportunity-events.jsonl
 ```
 
-Format yang digunakan adalah JSON Lines: setiap baris merupakan satu object JSON valid berisi `recordedAt` dan snapshot lengkap `OpportunityEvent`. Urutan write diserialisasi agar sama dengan urutan event diterima. Record final `DISAPPEARED` menyimpan `endedAt`, `lifetimeMs`, peak spread, peak tradable size, dan flag historis.
+Format yang digunakan adalah JSON Lines: setiap baris merupakan satu object JSON valid berisi `recordedAt` dan snapshot lengkap `OpportunityEvent`. Urutan write diserialisasi agar sama dengan urutan event diterima. Record final `DISAPPEARED` menyimpan `endedAt`, `lifetimeMs`, peak gross dan estimated net values, peak tradable size, serta flag historis.
 
-File runtime `data/*.jsonl` diabaikan Git. Jika penulisan gagal, recorder melaporkan error singkat tanpa menghentikan market feed atau comparator. Saat shutdown, aplikasi menunggu seluruh antrean write selesai sebelum keluar.
+File runtime JSONL di bawah `data/` diabaikan Git. Jika penulisan gagal, recorder melaporkan error singkat tanpa menghentikan market feed atau comparator. Saat shutdown, aplikasi menunggu seluruh antrean write selesai sebelum keluar.
 
 ## Replay
 
@@ -119,9 +151,9 @@ Default speed adalah `max`, dan default file adalah `data/market-quotes.jsonl`. 
 
 Live dan replay memanggil `MarketPipeline` yang sama untuk update latest quote, comparison, opportunity lifecycle, event recording, dan metrics. Waktu logis pipeline saat replay juga menggunakan `recordedAt`, sehingga pilihan speed tidak mengubah hasil downstream untuk dataset dan konfigurasi yang sama. UUID event boleh berbeda antar-run.
 
-Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Perubahan state hasil replay ditulis terpisah ke `data/replay-opportunity-events.jsonl`, sehingga tidak tercampur diam-diam dengan `data/opportunity-events.jsonl`. Pada akhir file, event yang masih terbuka dilaporkan jumlahnya dan tidak dipaksa menjadi `DISAPPEARED`.
+Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Setiap run memakai output unik berbentuk `data/replays/<timestamp>-<short-id>/opportunity-events.jsonl`, sehingga hasil antar-run dan live event tidak tercampur. Path aktual dicetak pada akhir replay. Jika tidak ada event, file tersebut tidak perlu dibuat. Event yang masih terbuka dilaporkan jumlahnya dan tidak dipaksa menjadi `DISAPPEARED`.
 
-Hasil replay masih berdasarkan gross spread top-of-book saja. Hasil tersebut bukan bukti profitability atau bahwa opportunity dapat dieksekusi; belum ada fee, slippage, maupun depth di luar best level.
+Raw replay dataset tetap hanya menyimpan `BestQuote`; formatnya tidak berubah dari Phase 1.5. Fee dihitung downstream menggunakan config saat replay, sehingga dataset yang sama dapat diuji ulang dengan fee berbeda. Hasilnya tetap bukan bukti profitability atau executability karena slippage dan depth di luar best level belum dihitung.
 
 ## Opportunity metrics
 
@@ -132,11 +164,13 @@ Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 - `invalidSyncEvents`: completed event yang pernah memasuki `INVALID_SYNC`.
 - Average, minimum, maksimum, P50, P95, dan P99 lifetime.
 - Average dan maksimum peak gross spread percent.
+- Average dan maksimum peak estimated net spread percent.
+- Average dan maksimum peak estimated net PnL absolute.
 - Average dan maksimum peak tradable size.
 
 Field `everActive` dan `everInvalidSync` disimpan pada setiap snapshot dan dibawa sampai final event; history tidak ditebak dari final state. Percentile menggunakan metode **nearest-rank** pada lifetime yang diurutkan ascending: rank = `ceil(percentile / 100 * jumlah sample)`.
 
-Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Metrics masih bersifat in-memory untuk session berjalan dan reset saat aplikasi restart. Statistik ini hanya menggambarkan gross spread top-of-book dan bukan ukuran profitability.
+Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Metrics masih bersifat in-memory untuk session berjalan dan reset saat aplikasi restart. Nilai net tetap estimasi top-of-book, bukan realized profit.
 
 ## Requirements
 
@@ -184,6 +218,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 1.5
+## Scope Phase 2.0
 
-Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, perekaman dan replay quote, perbandingan gross spread top-of-book, observasi lifecycle, persistence JSONL lokal, dan metrics dasar. Belum ada database, REST API, dashboard, fee/slippage/net profit/PnL, paper trading, atau fitur eksekusi order.
+Scope versi ini sengaja terbatas pada market data, perekaman/replay quote, comparison top-of-book, estimasi taker fee, lifecycle estimated net-positive candidate, persistence JSONL lokal, dan metrics dasar. Belum ada slippage model, multi-level execution, balance, transfer, private API, database, REST API, dashboard, paper trading, atau fitur eksekusi order.

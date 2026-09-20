@@ -1,3 +1,4 @@
+import { FEES, type FeeConfig } from '../config/fees.js';
 import {
   OpportunityMetrics,
   type OpportunityMetricsSummary,
@@ -8,6 +9,10 @@ import {
   type CrossExchangeComparisons,
 } from '../scanner/comparator.js';
 import {
+  calculateFeeAwareComparison,
+  type FeeAwareComparisons,
+} from '../scanner/fee-model.js';
+import {
   OpportunityTracker,
   type OpportunityEvent,
 } from '../scanner/opportunity.js';
@@ -17,11 +22,13 @@ export interface PipelineSnapshot {
   bybitQuote: BestQuote;
   okxQuote: BestQuote;
   comparisons: CrossExchangeComparisons;
+  feeAwareComparisons: FeeAwareComparisons;
 }
 
 export interface MarketPipelineOptions {
   eventRecorder?: Pick<EventRecorder, 'record' | 'flush'>;
   onEvent?: (event: OpportunityEvent) => void;
+  fees?: FeeConfig;
 }
 
 export class MarketPipeline {
@@ -62,10 +69,14 @@ export class MarketPipeline {
       bybitQuote,
       okxQuote,
       comparisons,
+      feeAwareComparisons: [
+        calculateFeeAwareComparison(comparisons[0], this.options.fees ?? FEES),
+        calculateFeeAwareComparison(comparisons[1], this.options.fees ?? FEES),
+      ],
     };
     this.latestSnapshot = pipelineSnapshot;
 
-    for (const comparison of comparisons) {
+    for (const comparison of pipelineSnapshot.feeAwareComparisons) {
       const event = this.opportunityTracker.process(
         comparison,
         processingTimestamp,

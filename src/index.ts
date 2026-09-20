@@ -42,7 +42,7 @@ const outputTimer = setInterval(() => {
     printComparisonSummary(
       snapshot.bybitQuote,
       snapshot.okxQuote,
-      snapshot.comparisons,
+      snapshot.feeAwareComparisons,
     );
   }
 }, OUTPUT_INTERVAL_MS);

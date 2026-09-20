@@ -1,8 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { SpreadComparison } from './comparator.js';
-
-export const MIN_GROSS_SPREAD_PERCENT = 0;
+import type { FeeAwareComparison } from './fee-model.js';
 
 export interface OpportunityEvent {
   id: string;
@@ -25,6 +23,13 @@ export interface OpportunityEvent {
   initialGrossSpreadAbsolute: number;
   currentGrossSpreadAbsolute: number;
   peakGrossSpreadAbsolute: number;
+  initialEstimatedNetSpreadPercent: number;
+  currentEstimatedNetSpreadPercent: number;
+  peakEstimatedNetSpreadPercent: number;
+  initialEstimatedNetPnlAbsolute: number;
+  currentEstimatedNetPnlAbsolute: number;
+  peakEstimatedNetPnlAbsolute: number;
+  currentEstimatedTotalFee: number;
   currentTradableSize: number;
   peakTradableSize: number;
   currentReceiveTimeDifferenceMs: number;
@@ -37,7 +42,7 @@ interface TrackedOpportunity {
   consecutiveValidObservations: number;
 }
 
-function eventKey(comparison: SpreadComparison): string {
+function eventKey(comparison: FeeAwareComparison): string {
   return `${comparison.symbol}:${comparison.buyExchange}->${comparison.sellExchange}`;
 }
 
@@ -47,7 +52,7 @@ function snapshot(event: OpportunityEvent): OpportunityEvent {
 
 function updateMetrics(
   event: OpportunityEvent,
-  comparison: SpreadComparison,
+  comparison: FeeAwareComparison,
   timestamp: number,
 ): void {
   event.updatedAt = timestamp;
@@ -63,29 +68,35 @@ function updateMetrics(
     event.peakGrossSpreadAbsolute,
     comparison.grossSpreadAbsolute,
   );
+  event.currentEstimatedNetSpreadPercent =
+    comparison.estimatedNetSpreadPercent;
+  event.peakEstimatedNetSpreadPercent = Math.max(
+    event.peakEstimatedNetSpreadPercent,
+    comparison.estimatedNetSpreadPercent,
+  );
+  event.currentEstimatedNetPnlAbsolute = comparison.estimatedNetPnlAbsolute;
+  event.peakEstimatedNetPnlAbsolute = Math.max(
+    event.peakEstimatedNetPnlAbsolute,
+    comparison.estimatedNetPnlAbsolute,
+  );
+  event.currentEstimatedTotalFee = comparison.estimatedTotalFee;
   event.peakTradableSize = Math.max(
     event.peakTradableSize,
     comparison.tradableSize,
   );
 }
 
-function initialState(comparison: SpreadComparison): OpportunityEvent['state'] {
-  return comparison.status === 'SYNC_OK' ? 'DETECTED' : 'INVALID_SYNC';
-}
-
 function createTrackedOpportunity(
-  comparison: SpreadComparison,
+  comparison: FeeAwareComparison,
   timestamp: number,
 ): TrackedOpportunity {
-  const state = initialState(comparison);
-
   return {
     event: {
       id: randomUUID(),
       symbol: comparison.symbol,
       buyExchange: comparison.buyExchange,
       sellExchange: comparison.sellExchange,
-      state,
+      state: 'DETECTED',
       detectedAt: timestamp,
       updatedAt: timestamp,
       endedAt: null,
@@ -96,13 +107,20 @@ function createTrackedOpportunity(
       initialGrossSpreadAbsolute: comparison.grossSpreadAbsolute,
       currentGrossSpreadAbsolute: comparison.grossSpreadAbsolute,
       peakGrossSpreadAbsolute: comparison.grossSpreadAbsolute,
+      initialEstimatedNetSpreadPercent: comparison.estimatedNetSpreadPercent,
+      currentEstimatedNetSpreadPercent: comparison.estimatedNetSpreadPercent,
+      peakEstimatedNetSpreadPercent: comparison.estimatedNetSpreadPercent,
+      initialEstimatedNetPnlAbsolute: comparison.estimatedNetPnlAbsolute,
+      currentEstimatedNetPnlAbsolute: comparison.estimatedNetPnlAbsolute,
+      peakEstimatedNetPnlAbsolute: comparison.estimatedNetPnlAbsolute,
+      currentEstimatedTotalFee: comparison.estimatedTotalFee,
       currentTradableSize: comparison.tradableSize,
       peakTradableSize: comparison.tradableSize,
       currentReceiveTimeDifferenceMs: comparison.receiveTimeDifferenceMs,
       everActive: false,
-      everInvalidSync: state === 'INVALID_SYNC',
+      everInvalidSync: false,
     },
-    consecutiveValidObservations: state === 'DETECTED' ? 1 : 0,
+    consecutiveValidObservations: 1,
   };
 }
 
@@ -124,13 +142,13 @@ export class OpportunityTracker {
   }
 
   process(
-    comparison: SpreadComparison,
+    comparison: FeeAwareComparison,
     timestamp: number,
   ): OpportunityEvent | null {
     const key = eventKey(comparison);
     const tracked = this.activeEvents.get(key);
 
-    if (comparison.grossSpreadPercent <= MIN_GROSS_SPREAD_PERCENT) {
+    if (comparison.estimatedNetPnlAbsolute <= 0) {
       if (tracked === undefined) {
         return null;
       }
@@ -143,15 +161,12 @@ export class OpportunityTracker {
       return snapshot(tracked.event);
     }
 
-    if (tracked === undefined) {
-      const created = createTrackedOpportunity(comparison, timestamp);
-      this.activeEvents.set(key, created);
-      return snapshot(created.event);
-    }
-
-    updateMetrics(tracked.event, comparison, timestamp);
-
     if (comparison.status === 'STALE') {
+      if (tracked === undefined) {
+        return null;
+      }
+
+      updateMetrics(tracked.event, comparison, timestamp);
       tracked.consecutiveValidObservations = 0;
       if (tracked.event.state === 'INVALID_SYNC') {
         return null;
@@ -161,6 +176,14 @@ export class OpportunityTracker {
       tracked.event.everInvalidSync = true;
       return snapshot(tracked.event);
     }
+
+    if (tracked === undefined) {
+      const created = createTrackedOpportunity(comparison, timestamp);
+      this.activeEvents.set(key, created);
+      return snapshot(created.event);
+    }
+
+    updateMetrics(tracked.event, comparison, timestamp);
 
     tracked.consecutiveValidObservations += 1;
     const nextState = stateForValidObservation(

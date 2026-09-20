@@ -23,6 +23,13 @@ function completedEvent(
     initialGrossSpreadAbsolute: 1,
     currentGrossSpreadAbsolute: 0,
     peakGrossSpreadAbsolute: 2,
+    initialEstimatedNetSpreadPercent: 0.008,
+    currentEstimatedNetSpreadPercent: 0,
+    peakEstimatedNetSpreadPercent: 0.012,
+    initialEstimatedNetPnlAbsolute: 0.8,
+    currentEstimatedNetPnlAbsolute: 0,
+    peakEstimatedNetPnlAbsolute: 1.2,
+    currentEstimatedTotalFee: 0.2,
     currentTradableSize: 0.3,
     peakTradableSize: 0.5,
     currentReceiveTimeDifferenceMs: 10,
@@ -42,6 +49,8 @@ test('empty metrics are zero and null safe', () => {
   assert.equal(summary.averageLifetimeMs, null);
   assert.equal(summary.p99LifetimeMs, null);
   assert.equal(summary.averagePeakSpreadPercent, null);
+  assert.equal(summary.averagePeakNetSpreadPercent, null);
+  assert.equal(summary.averagePeakNetPnlAbsolute, null);
 });
 
 test('counts completed events and ignores incomplete events', () => {
@@ -118,4 +127,29 @@ test('aggregates peak spread percent and peak tradable size', () => {
   assert.equal(summary.maxPeakSpreadPercent, 0.05);
   assert.equal(summary.averagePeakTradableSize, 0.5);
   assert.equal(summary.maxPeakTradableSize, 0.8);
+});
+
+test('aggregates peak estimated net spread and PnL', () => {
+  const metrics = new OpportunityMetrics();
+  metrics.recordCompleted(
+    completedEvent({
+      peakEstimatedNetSpreadPercent: 0.01,
+      peakEstimatedNetPnlAbsolute: 0.5,
+    }),
+  );
+  metrics.recordCompleted(
+    completedEvent({
+      peakEstimatedNetSpreadPercent: 0.05,
+      peakEstimatedNetPnlAbsolute: 2.5,
+    }),
+  );
+
+  const summary = metrics.getSummary();
+  assert.ok(
+    summary.averagePeakNetSpreadPercent !== null &&
+      Math.abs(summary.averagePeakNetSpreadPercent - 0.03) < 1e-12,
+  );
+  assert.equal(summary.maxPeakNetSpreadPercent, 0.05);
+  assert.equal(summary.averagePeakNetPnlAbsolute, 1.5);
+  assert.equal(summary.maxPeakNetPnlAbsolute, 2.5);
 });

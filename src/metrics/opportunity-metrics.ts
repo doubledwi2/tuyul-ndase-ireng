@@ -13,6 +13,10 @@ export interface OpportunityMetricsSummary {
   p99LifetimeMs: number | null;
   averagePeakSpreadPercent: number | null;
   maxPeakSpreadPercent: number | null;
+  averagePeakNetSpreadPercent: number | null;
+  maxPeakNetSpreadPercent: number | null;
+  averagePeakNetPnlAbsolute: number | null;
+  maxPeakNetPnlAbsolute: number | null;
   averagePeakTradableSize: number | null;
   maxPeakTradableSize: number | null;
 }
@@ -51,6 +55,8 @@ export class OpportunityMetrics {
   private invalidSyncEvents = 0;
   private readonly lifetimes: number[] = [];
   private readonly peakSpreads: number[] = [];
+  private readonly peakNetSpreads: number[] = [];
+  private readonly peakNetPnls: number[] = [];
   private readonly peakSizes: number[] = [];
 
   recordCompleted(event: OpportunityEvent): void {
@@ -67,6 +73,8 @@ export class OpportunityMetrics {
     }
     this.lifetimes.push(event.lifetimeMs);
     this.peakSpreads.push(event.peakGrossSpreadPercent);
+    this.peakNetSpreads.push(event.peakEstimatedNetSpreadPercent);
+    this.peakNetPnls.push(event.peakEstimatedNetPnlAbsolute);
     this.peakSizes.push(event.peakTradableSize);
   }
 
@@ -84,6 +92,10 @@ export class OpportunityMetrics {
       p99LifetimeMs: nearestRankPercentile(this.lifetimes, 99),
       averagePeakSpreadPercent: average(this.peakSpreads),
       maxPeakSpreadPercent: maximum(this.peakSpreads),
+      averagePeakNetSpreadPercent: average(this.peakNetSpreads),
+      maxPeakNetSpreadPercent: maximum(this.peakNetSpreads),
+      averagePeakNetPnlAbsolute: average(this.peakNetPnls),
+      maxPeakNetPnlAbsolute: maximum(this.peakNetPnls),
       averagePeakTradableSize: average(this.peakSizes),
       maxPeakTradableSize: maximum(this.peakSizes),
     };

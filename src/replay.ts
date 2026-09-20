@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+
 import { MarketPipeline } from './app/pipeline.js';
 import { EventRecorder } from './recording/event-recorder.js';
 import { DEFAULT_MARKET_RECORD_PATH } from './recording/market-recorder.js';
@@ -6,15 +9,26 @@ import {
   type ReplaySpeed,
 } from './replay/replay-engine.js';
 import {
+  printComparisonSummary,
   printMetricsSummary,
   printOpportunityEvent,
 } from './ui/console.js';
 
-const REPLAY_EVENT_RECORD_PATH = 'data/replay-opportunity-events.jsonl';
-
 interface ReplayArguments {
   filePath: string;
   speed: ReplaySpeed;
+}
+
+export function createReplayEventRecordPath(
+  timestamp = Date.now(),
+  id = randomUUID(),
+): string {
+  return join(
+    'data',
+    'replays',
+    `${timestamp}-${id.slice(0, 8)}`,
+    'opportunity-events.jsonl',
+  );
 }
 
 function parseArguments(args: readonly string[]): ReplayArguments {
@@ -51,7 +65,8 @@ function parseArguments(args: readonly string[]): ReplayArguments {
 
 async function main(): Promise<void> {
   const { filePath, speed } = parseArguments(process.argv.slice(2));
-  const replayEventRecorder = new EventRecorder(REPLAY_EVENT_RECORD_PATH);
+  const replayEventRecordPath = createReplayEventRecordPath();
+  const replayEventRecorder = new EventRecorder(replayEventRecordPath);
   const pipeline = new MarketPipeline({
     eventRecorder: replayEventRecorder,
     onEvent: printOpportunityEvent,
@@ -68,10 +83,18 @@ async function main(): Promise<void> {
   });
 
   await pipeline.flush();
+  const finalSnapshot = pipeline.getLatestSnapshot();
+  if (finalSnapshot !== null) {
+    printComparisonSummary(
+      finalSnapshot.bybitQuote,
+      finalSnapshot.okxQuote,
+      finalSnapshot.feeAwareComparisons,
+    );
+  }
   printMetricsSummary(pipeline.getMetricsSummary());
   console.log(`\n[REPLAY] Processed records: ${result.processedRecords}`);
   console.log(`[REPLAY] Open events: ${pipeline.getOpenEventCount()}`);
-  console.log(`[REPLAY] Event output: ${REPLAY_EVENT_RECORD_PATH}`);
+  console.log(`[REPLAY] Event output: ${replayEventRecordPath}`);
 }
 
 main().catch((error: unknown) => {
