@@ -1,6 +1,6 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Realtime BTC/USDT best bid and ask collector for Bybit Spot and OKX Spot",
   "type": "module",

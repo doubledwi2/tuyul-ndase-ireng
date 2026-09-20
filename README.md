@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Cross-Exchange Comparator v0.1.2 adalah Phase 1.2 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, lalu membandingkan top-of-book kedua exchange dalam dua arah.
+Opportunity Event Lifecycle v0.1.3 adalah Phase 1.3 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, membandingkan top-of-book kedua exchange dalam dua arah, lalu melacak lifecycle candidate gross-spread.
 
 Aplikasi ini tidak memakai API key atau autentikasi, tidak menyimpan data, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution.
 
@@ -54,6 +54,25 @@ Comparator memakai `receivedTimestamp` sebagai safety check awal:
 
 Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang terlalu jauh waktunya. `SYNC_OK` bukan jaminan opportunity valid atau executable dan bukan batas ideal untuk trading.
 
+## Opportunity event lifecycle
+
+Candidate opportunity hanya berarti `grossSpreadPercent > 0`. Ini bukan berarti profitable karena fee dan slippage belum dihitung.
+
+Setiap arah mempunyai event independen dengan key seperti `BTC/USDT:bybit->okx`. Event ID yang sama dipertahankan sepanjang satu lifecycle agar candidate dapat dilacak dari awal sampai berakhir. Setelah event `DISAPPEARED`, kemunculan baru pada arah yang sama mendapat ID baru.
+
+Untuk comparison `SYNC_OK`, state dipromosikan berdasarkan observasi valid berturut-turut tanpa timer tambahan:
+
+```text
+observasi valid #1  DETECTED
+observasi valid #2  VALIDATING
+observasi valid #3+ ACTIVE
+spread <= 0         DISAPPEARED
+```
+
+`INVALID_SYNC` berarti gross spread positif terlihat, tetapi data tidak memenuhi baseline synchronization. Saat data kembali `SYNC_OK`, urutan observasi valid dimulai lagi dari `DETECTED` dengan event ID yang sama.
+
+Selama event hidup, collector memperbarui current dan peak gross spread serta peak tradable size tanpa menjumlahkan size antar-tick. Lifetime baru dihitung ketika event menjadi `DISAPPEARED`. State `ACTIVE` tetap bukan jaminan bahwa candidate executable atau profitable.
+
 ## Requirements
 
 - Node.js 20 atau lebih baru
@@ -95,6 +114,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 1.2
+## Scope Phase 1.3
 
-Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, dan perbandingan gross spread top-of-book. Belum ada database, REST API, dashboard, fee/slippage/PnL, paper trading, lifecycle opportunity, atau fitur eksekusi order.
+Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, perbandingan gross spread top-of-book, dan observasi lifecycle candidate. Belum ada database, REST API, dashboard, fee/slippage/net profit/PnL, paper trading, atau fitur eksekusi order.

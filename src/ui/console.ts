@@ -1,4 +1,5 @@
 import type { CrossExchangeComparisons, SpreadComparison } from '../scanner/comparator.js';
+import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { BestQuote } from '../types/market.js';
 
 function signed(value: number, fractionDigits: number): string {
@@ -41,4 +42,28 @@ export function printComparisonSummary(
   printDirection(comparisons[0]);
   console.log('');
   printDirection(comparisons[1]);
+}
+
+export function printOpportunityEvent(event: OpportunityEvent): void {
+  console.log('\n[EVENT]');
+  console.log(`ID: ${event.id}`);
+  console.log(
+    `Direction: ${event.buyExchange.toUpperCase()} -> ${event.sellExchange.toUpperCase()}`,
+  );
+  console.log(`State: ${event.state}`);
+  console.log(
+    `Gross spread: ${signed(event.currentGrossSpreadAbsolute, 2)} USDT ` +
+      `(${signed(event.currentGrossSpreadPercent, 4)}%)`,
+  );
+  console.log(`Tradable size: ${event.currentTradableSize} BTC`);
+  console.log(`Sync diff: ${event.currentReceiveTimeDifferenceMs} ms`);
+
+  if (event.state === 'DISAPPEARED') {
+    console.log(`Lifetime: ${event.lifetimeMs ?? 0} ms`);
+    console.log(
+      `Peak gross spread: ${signed(event.peakGrossSpreadAbsolute, 2)} USDT ` +
+        `(${signed(event.peakGrossSpreadPercent, 4)}%)`,
+    );
+    console.log(`Peak tradable size: ${event.peakTradableSize} BTC`);
+  }
 }
