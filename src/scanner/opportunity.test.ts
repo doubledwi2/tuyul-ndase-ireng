@@ -156,3 +156,35 @@ test('does not emit another update when ACTIVE state remains unchanged', () => {
 
   assert.equal(tracker.process(comparison(), START + 3), null);
 });
+
+test('sets everActive after the event reaches ACTIVE', () => {
+  const tracker = new OpportunityTracker();
+  tracker.process(comparison(), START);
+  tracker.process(comparison(), START + 1);
+  const active = tracker.process(comparison(), START + 2);
+
+  assert.equal(active?.everActive, true);
+});
+
+test('sets everInvalidSync after the event reaches INVALID_SYNC', () => {
+  const tracker = new OpportunityTracker();
+  const invalid = tracker.process(comparison({ status: 'STALE' }), START);
+
+  assert.equal(invalid?.everInvalidSync, true);
+});
+
+test('retains historical flags on the final DISAPPEARED event', () => {
+  const tracker = new OpportunityTracker();
+  tracker.process(comparison({ status: 'STALE' }), START);
+  tracker.process(comparison(), START + 1);
+  tracker.process(comparison(), START + 2);
+  tracker.process(comparison(), START + 3);
+  const disappeared = tracker.process(
+    comparison({ grossSpreadAbsolute: 0, grossSpreadPercent: 0 }),
+    START + 4,
+  );
+
+  assert.equal(disappeared?.state, 'DISAPPEARED');
+  assert.equal(disappeared?.everActive, true);
+  assert.equal(disappeared?.everInvalidSync, true);
+});

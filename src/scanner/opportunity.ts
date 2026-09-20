@@ -28,6 +28,8 @@ export interface OpportunityEvent {
   currentTradableSize: number;
   peakTradableSize: number;
   currentReceiveTimeDifferenceMs: number;
+  everActive: boolean;
+  everInvalidSync: boolean;
 }
 
 interface TrackedOpportunity {
@@ -97,6 +99,8 @@ function createTrackedOpportunity(
       currentTradableSize: comparison.tradableSize,
       peakTradableSize: comparison.tradableSize,
       currentReceiveTimeDifferenceMs: comparison.receiveTimeDifferenceMs,
+      everActive: false,
+      everInvalidSync: state === 'INVALID_SYNC',
     },
     consecutiveValidObservations: state === 'DETECTED' ? 1 : 0,
   };
@@ -150,6 +154,7 @@ export class OpportunityTracker {
       }
 
       tracked.event.state = 'INVALID_SYNC';
+      tracked.event.everInvalidSync = true;
       return snapshot(tracked.event);
     }
 
@@ -162,6 +167,9 @@ export class OpportunityTracker {
     }
 
     tracked.event.state = nextState;
+    if (nextState === 'ACTIVE') {
+      tracked.event.everActive = true;
+    }
     return snapshot(tracked.event);
   }
 }

@@ -1,4 +1,5 @@
 import type { CrossExchangeComparisons, SpreadComparison } from '../scanner/comparator.js';
+import type { OpportunityMetricsSummary } from '../metrics/opportunity-metrics.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { BestQuote } from '../types/market.js';
 
@@ -66,4 +67,32 @@ export function printOpportunityEvent(event: OpportunityEvent): void {
     );
     console.log(`Peak tradable size: ${event.peakTradableSize} BTC`);
   }
+}
+
+function metric(value: number | null, fractionDigits: number): string {
+  return value === null ? 'N/A' : value.toFixed(fractionDigits);
+}
+
+export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
+  console.log('\n[METRICS]');
+  console.log(`Completed events: ${summary.totalCompletedEvents}`);
+  console.log(`Ever ACTIVE: ${summary.eventsEverActive}`);
+  console.log(`Never ACTIVE: ${summary.eventsNeverActive}`);
+  console.log(`Ever INVALID_SYNC: ${summary.invalidSyncEvents}`);
+  console.log('');
+  console.log('Lifetime:');
+  console.log(`Avg: ${metric(summary.averageLifetimeMs, 2)} ms`);
+  console.log(`Min: ${metric(summary.minLifetimeMs, 0)} ms`);
+  console.log(`P50: ${metric(summary.p50LifetimeMs, 0)} ms`);
+  console.log(`P95: ${metric(summary.p95LifetimeMs, 0)} ms`);
+  console.log(`P99: ${metric(summary.p99LifetimeMs, 0)} ms`);
+  console.log(`Max: ${metric(summary.maxLifetimeMs, 0)} ms`);
+  console.log('');
+  console.log('Peak spread:');
+  console.log(`Avg: ${metric(summary.averagePeakSpreadPercent, 4)}%`);
+  console.log(`Max: ${metric(summary.maxPeakSpreadPercent, 4)}%`);
+  console.log('');
+  console.log('Peak size:');
+  console.log(`Avg: ${metric(summary.averagePeakTradableSize, 8)} BTC`);
+  console.log(`Max: ${metric(summary.maxPeakTradableSize, 8)} BTC`);
 }

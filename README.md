@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Opportunity Event Lifecycle v0.1.3 adalah Phase 1.3 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, membandingkan top-of-book kedua exchange dalam dua arah, lalu melacak lifecycle candidate gross-spread.
+Event Recorder + Metrics v0.1.4 adalah Phase 1.4 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, membandingkan top-of-book kedua exchange, melacak lifecycle candidate gross-spread, lalu merekam perubahan state dan menghitung statistik dasar.
 
 Aplikasi ini tidak memakai API key atau autentikasi, tidak menyimpan data, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution.
 
@@ -73,6 +73,33 @@ spread <= 0         DISAPPEARED
 
 Selama event hidup, collector memperbarui current dan peak gross spread serta peak tradable size tanpa menjumlahkan size antar-tick. Lifetime baru dihitung ketika event menjadi `DISAPPEARED`. State `ACTIVE` tetap bukan jaminan bahwa candidate executable atau profitable.
 
+## Event recording
+
+Setiap perubahan state event disimpan secara append-only ke:
+
+```text
+data/opportunity-events.jsonl
+```
+
+Format yang digunakan adalah JSON Lines: setiap baris merupakan satu object JSON valid berisi `recordedAt` dan snapshot lengkap `OpportunityEvent`. Urutan write diserialisasi agar sama dengan urutan event diterima. Record final `DISAPPEARED` menyimpan `endedAt`, `lifetimeMs`, peak spread, peak tradable size, dan flag historis.
+
+File runtime `data/*.jsonl` diabaikan Git. Jika penulisan gagal, recorder melaporkan error singkat tanpa menghentikan market feed atau comparator. Saat shutdown, aplikasi menunggu seluruh antrean write selesai sebelum keluar.
+
+## Opportunity metrics
+
+Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
+
+- `eventsEverActive`: completed event yang pernah mencapai `ACTIVE`.
+- `eventsNeverActive`: completed event yang tidak pernah mencapai `ACTIVE`.
+- `invalidSyncEvents`: completed event yang pernah memasuki `INVALID_SYNC`.
+- Average, minimum, maksimum, P50, P95, dan P99 lifetime.
+- Average dan maksimum peak gross spread percent.
+- Average dan maksimum peak tradable size.
+
+Field `everActive` dan `everInvalidSync` disimpan pada setiap snapshot dan dibawa sampai final event; history tidak ditebak dari final state. Percentile menggunakan metode **nearest-rank** pada lifetime yang diurutkan ascending: rank = `ceil(percentile / 100 * jumlah sample)`.
+
+Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Metrics masih bersifat in-memory untuk session berjalan dan reset saat aplikasi restart. Statistik ini hanya menggambarkan gross spread top-of-book dan bukan ukuran profitability.
+
 ## Requirements
 
 - Node.js 20 atau lebih baru
@@ -114,6 +141,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 1.3
+## Scope Phase 1.4
 
-Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, perbandingan gross spread top-of-book, dan observasi lifecycle candidate. Belum ada database, REST API, dashboard, fee/slippage/net profit/PnL, paper trading, atau fitur eksekusi order.
+Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, perbandingan gross spread top-of-book, observasi lifecycle, persistence JSONL lokal, dan metrics dasar. Belum ada database, replay engine, REST API, dashboard, fee/slippage/net profit/PnL, paper trading, atau fitur eksekusi order.

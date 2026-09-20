@@ -1,16 +1,22 @@
 import { connectBybit } from './exchanges/bybit.js';
 import { connectOkx } from './exchanges/okx.js';
+import { OpportunityMetrics } from './metrics/opportunity-metrics.js';
+import { EventRecorder } from './recording/event-recorder.js';
 import { compareQuotes } from './scanner/comparator.js';
 import { OpportunityTracker } from './scanner/opportunity.js';
 import type { BestQuote, ExchangeConnection } from './types/market.js';
 import {
   printComparisonSummary,
+  printMetricsSummary,
   printOpportunityEvent,
 } from './ui/console.js';
 
 const OUTPUT_INTERVAL_MS = 500;
+const METRICS_INTERVAL_MS = 60_000;
 const latestQuotes = new Map<BestQuote['exchange'], BestQuote>();
 const opportunityTracker = new OpportunityTracker();
+const eventRecorder = new EventRecorder();
+const opportunityMetrics = new OpportunityMetrics();
 
 function receiveQuote(quote: BestQuote): void {
   latestQuotes.set(quote.exchange, quote);
@@ -44,15 +50,23 @@ const outputTimer = setInterval(() => {
         comparisonTimestamp,
       );
       if (event !== null) {
+        void eventRecorder.record(event, comparisonTimestamp);
+        if (event.state === 'DISAPPEARED') {
+          opportunityMetrics.recordCompleted(event);
+        }
         printOpportunityEvent(event);
       }
     }
   }
 }, OUTPUT_INTERVAL_MS);
 
+const metricsTimer = setInterval(() => {
+  printMetricsSummary(opportunityMetrics.getSummary());
+}, METRICS_INTERVAL_MS);
+
 let shuttingDown = false;
 
-function shutdown(signal: NodeJS.Signals): void {
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) {
     return;
   }
@@ -60,11 +74,13 @@ function shutdown(signal: NodeJS.Signals): void {
   shuttingDown = true;
   console.log(`\nReceived ${signal}; closing WebSocket connections...`);
   clearInterval(outputTimer);
+  clearInterval(metricsTimer);
   for (const connection of connections) {
     connection.close();
   }
 
-  setTimeout(() => process.exit(0), 250).unref();
+  await eventRecorder.flush();
+  process.exit(0);
 }
 
 process.on('SIGINT', shutdown);
