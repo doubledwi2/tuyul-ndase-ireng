@@ -1,33 +1,14 @@
 import { connectBybit } from './exchanges/bybit.js';
 import { connectOkx } from './exchanges/okx.js';
+import { compareQuotes } from './scanner/comparator.js';
 import type { BestQuote, ExchangeConnection } from './types/market.js';
+import { printComparisonSummary } from './ui/console.js';
 
 const OUTPUT_INTERVAL_MS = 500;
 const latestQuotes = new Map<BestQuote['exchange'], BestQuote>();
-const pendingOutput = new Set<BestQuote['exchange']>();
 
 function receiveQuote(quote: BestQuote): void {
   latestQuotes.set(quote.exchange, quote);
-  pendingOutput.add(quote.exchange);
-}
-
-function formatTimestamp(value: number | null): string {
-  return value === null ? 'N/A' : `${new Date(value).toISOString()} (${value})`;
-}
-
-function printQuote(quote: BestQuote): void {
-  console.log(`\n[${quote.exchange.toUpperCase()}] ${quote.symbol}`);
-  console.log(`Bid: ${quote.bid}`);
-  console.log(`Bid size: ${quote.bidSize}`);
-  console.log('');
-  console.log(`Ask: ${quote.ask}`);
-  console.log(`Ask size: ${quote.askSize}`);
-  console.log('');
-  console.log(`Exchange timestamp: ${formatTimestamp(quote.exchangeTimestamp)}`);
-  console.log(
-    `Matching engine timestamp: ${formatTimestamp(quote.matchingEngineTimestamp)}`,
-  );
-  console.log(`Received timestamp: ${formatTimestamp(quote.receivedTimestamp)}`);
 }
 
 const connections: ExchangeConnection[] = [
@@ -36,13 +17,17 @@ const connections: ExchangeConnection[] = [
 ];
 
 const outputTimer = setInterval(() => {
-  for (const exchange of pendingOutput) {
-    const quote = latestQuotes.get(exchange);
-    if (quote !== undefined) {
-      printQuote(quote);
-    }
+  const bybitQuote = latestQuotes.get('bybit');
+  const okxQuote = latestQuotes.get('okx');
+  const comparisons = compareQuotes(bybitQuote, okxQuote);
+
+  if (
+    bybitQuote !== undefined &&
+    okxQuote !== undefined &&
+    comparisons !== null
+  ) {
+    printComparisonSummary(bybitQuote, okxQuote, comparisons);
   }
-  pendingOutput.clear();
 }, OUTPUT_INTERVAL_MS);
 
 let shuttingDown = false;

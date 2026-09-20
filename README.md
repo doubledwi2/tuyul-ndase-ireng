@@ -1,8 +1,8 @@
 # tuyul-ndase-ireng
 
-Market Data Collector v0.1.1 adalah Phase 1.1 dari project real-time crypto arbitrage scanner. Pada fase ini aplikasi **hanya membaca public market data** untuk best bid, best ask, dan size pada masing-masing level BTC/USDT dari Bybit Spot dan OKX Spot.
+Cross-Exchange Comparator v0.1.2 adalah Phase 1.2 dari project real-time crypto arbitrage scanner. Aplikasi membaca best bid, best ask, dan size BTC/USDT dari Bybit Spot dan OKX Spot, lalu membandingkan top-of-book kedua exchange dalam dua arah.
 
-Aplikasi ini tidak memakai API key atau autentikasi, tidak menyimpan data, tidak menghitung peluang arbitrase, dan tidak melakukan trading maupun order execution.
+Aplikasi ini tidak memakai API key atau autentikasi, tidak menyimpan data, tidak menentukan peluang yang executable, dan tidak melakukan trading maupun order execution.
 
 ## Data source
 
@@ -26,6 +26,33 @@ Setiap quote berisi `bid`, `bidSize`, `ask`, dan `askSize`, ditambah tiga timest
 Bybit menyediakan `ts` sebagai `exchangeTimestamp` dan `cts` sebagai `matchingEngineTimestamp`. Pada OKX `bbo-tbt`, dokumentasi exchange menyatakan satu-satunya field `ts` adalah waktu matching engine menghasilkan book. Karena itu nilai sumber yang sama digunakan untuk `exchangeTimestamp` dan `matchingEngineTimestamp`.
 
 `matchingEngineTimestamp` tetap nullable dalam model bersama. Nilainya `null` jika suatu exchange atau message tidak menyediakan timestamp matching-engine yang relevan; collector tidak membuat timestamp pengganti.
+
+## Cross-exchange comparison
+
+Comparator memakai latest valid quote dari kedua exchange dan menghitung dua arah:
+
+- Buy Bybit pada ask, lalu sell OKX pada bid.
+- Buy OKX pada ask, lalu sell Bybit pada bid.
+
+Formula yang digunakan:
+
+```text
+grossSpreadAbsolute = sellPrice - buyPrice
+grossSpreadPercent = ((sellPrice - buyPrice) / buyPrice) * 100
+tradableSize = min(buyExchange.askSize, sellExchange.bidSize)
+```
+
+`tradableSize` hanya menunjukkan size teoritis yang tersedia pada best level. Belum ada simulasi multi-level order book. Gross spread juga belum memperhitungkan fee atau slippage dan tidak boleh dianggap sebagai profit maupun bukti bahwa opportunity dapat dieksekusi.
+
+### Baseline synchronization
+
+Comparator memakai `receivedTimestamp` sebagai safety check awal:
+
+- Selisih waktu penerimaan maksimum: `250 ms`.
+- Usia quote maksimum saat comparison dibuat: `1000 ms`.
+- Comparison berstatus `SYNC_OK` hanya jika kedua syarat terpenuhi; selain itu `STALE`.
+
+Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang terlalu jauh waktunya. `SYNC_OK` bukan jaminan opportunity valid atau executable dan bukan batas ideal untuk trading.
 
 ## Requirements
 
@@ -68,6 +95,6 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 1.1
+## Scope Phase 1.2
 
-Scope versi ini sengaja terbatas pada penerimaan, validasi, dan normalisasi best bid/ask beserta size. Belum ada database, REST API, dashboard, kalkulasi arbitrase/profit/fee/slippage, paper trading, atau fitur eksekusi order.
+Scope versi ini sengaja terbatas pada penerimaan, validasi, normalisasi, dan perbandingan gross spread top-of-book. Belum ada database, REST API, dashboard, fee/slippage/PnL, paper trading, lifecycle opportunity, atau fitur eksekusi order.
