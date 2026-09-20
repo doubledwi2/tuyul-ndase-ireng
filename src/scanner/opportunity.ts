@@ -10,6 +10,7 @@ import {
   type OpportunityQualification,
   type QualificationReason,
 } from './opportunity-filter.js';
+import type { SyncAssessment, SyncReason, SyncStatus } from '../timing/sync-model.js';
 
 export interface OpportunityEvent {
   id: string;
@@ -54,6 +55,12 @@ export interface OpportunityEvent {
   currentTradableSize: number;
   peakTradableSize: number;
   currentReceiveTimeDifferenceMs: number;
+  currentReceiveSkewMs: number;
+  currentSourceTimestampSkewMs: number | null;
+  currentMaxBookAgeMs: number;
+  currentSyncStatus: SyncStatus;
+  currentSyncReasons: SyncReason[];
+  peakReceiveSkewMs: number;
   everActive: boolean;
   everInvalidSync: boolean;
 }
@@ -72,6 +79,7 @@ function snapshot(event: OpportunityEvent): OpportunityEvent {
   return {
     ...event,
     currentQualificationReasons: [...event.currentQualificationReasons],
+    currentSyncReasons: [...event.currentSyncReasons],
   };
 }
 
@@ -80,6 +88,7 @@ function updateMetrics(
   comparison: DepthComparison,
   qualification: OpportunityQualification,
   timestamp: number,
+  syncAssessment?: SyncAssessment,
 ): void {
   event.updatedAt = timestamp;
   event.currentQualificationReasons = [...qualification.reasons];
@@ -87,6 +96,18 @@ function updateMetrics(
   event.currentGrossSpreadAbsolute = comparison.bestGrossSpreadAbsolute;
   event.currentTradableSize = comparison.tradableSize;
   event.currentReceiveTimeDifferenceMs = comparison.receiveTimeDifferenceMs;
+  if (syncAssessment !== undefined) {
+    event.currentReceiveSkewMs = syncAssessment.receiveSkewMs;
+    event.currentSourceTimestampSkewMs =
+      syncAssessment.sourceTimestampSkewMs;
+    event.currentMaxBookAgeMs = syncAssessment.maxBookAgeMs;
+    event.currentSyncStatus = syncAssessment.status;
+    event.currentSyncReasons = [...syncAssessment.reasons];
+    event.peakReceiveSkewMs = Math.max(
+      event.peakReceiveSkewMs,
+      syncAssessment.receiveSkewMs,
+    );
+  }
   event.peakGrossSpreadPercent = Math.max(
     event.peakGrossSpreadPercent,
     comparison.bestGrossSpreadPercent,
@@ -129,6 +150,7 @@ function createTrackedOpportunity(
   comparison: DepthComparison,
   qualification: OpportunityQualification,
   timestamp: number,
+  syncAssessment?: SyncAssessment,
 ): TrackedOpportunity {
   if (
     !qualification.qualified ||
@@ -176,6 +198,24 @@ function createTrackedOpportunity(
       currentTradableSize: comparison.tradableSize,
       peakTradableSize: comparison.tradableSize,
       currentReceiveTimeDifferenceMs: comparison.receiveTimeDifferenceMs,
+      currentReceiveSkewMs:
+        syncAssessment?.receiveSkewMs ?? comparison.receiveTimeDifferenceMs,
+      currentSourceTimestampSkewMs:
+        syncAssessment?.sourceTimestampSkewMs ?? null,
+      currentMaxBookAgeMs: syncAssessment?.maxBookAgeMs ?? 0,
+      currentSyncStatus:
+        syncAssessment?.status ??
+        (comparison.status === 'STALE'
+          ? 'RECEIVE_SKEW_HIGH'
+          : 'SYNC_HEALTHY'),
+      currentSyncReasons:
+        syncAssessment?.reasons === undefined
+          ? comparison.status === 'STALE'
+            ? ['RECEIVE_SKEW_HIGH']
+            : []
+          : [...syncAssessment.reasons],
+      peakReceiveSkewMs:
+        syncAssessment?.receiveSkewMs ?? comparison.receiveTimeDifferenceMs,
       everActive: false,
       everInvalidSync: false,
     },
@@ -218,6 +258,7 @@ export class OpportunityTracker {
     comparison: DepthComparison,
     timestamp: number,
     qualification = qualifyOpportunity(comparison, this.qualityConfig),
+    syncAssessment?: SyncAssessment,
   ): OpportunityEvent | null {
     const key = eventKey(comparison);
     const tracked = this.activeEvents.get(key);
@@ -227,8 +268,23 @@ export class OpportunityTracker {
         return null;
       }
 
-      updateMetrics(tracked.event, comparison, qualification, timestamp);
-      if (qualification.reasons.includes('STALE')) {
+      updateMetrics(
+        tracked.event,
+        comparison,
+        qualification,
+        timestamp,
+        syncAssessment,
+      );
+      const economicQualityOk =
+        comparison.status === 'EXECUTABLE_NET_POSITIVE' &&
+        qualification.depthOk &&
+        qualification.netSpreadOk &&
+        qualification.netPnlOk;
+      const syncUnhealthy =
+        syncAssessment === undefined
+          ? qualification.reasons.includes('STALE')
+          : syncAssessment.status !== 'SYNC_HEALTHY';
+      if ((syncAssessment === undefined || economicQualityOk) && syncUnhealthy) {
         tracked.validObservations = 0;
         tracked.validationStartedAt = null;
         if (tracked.event.state === 'INVALID_SYNC') {
@@ -251,12 +307,19 @@ export class OpportunityTracker {
         comparison,
         qualification,
         timestamp,
+        syncAssessment,
       );
       this.activeEvents.set(key, created);
       return snapshot(created.event);
     }
 
-    updateMetrics(tracked.event, comparison, qualification, timestamp);
+    updateMetrics(
+      tracked.event,
+      comparison,
+      qualification,
+      timestamp,
+      syncAssessment,
+    );
     if (tracked.validationStartedAt === null) {
       resetValidationWindow(tracked, comparison, timestamp);
       tracked.event.state = 'DETECTED';

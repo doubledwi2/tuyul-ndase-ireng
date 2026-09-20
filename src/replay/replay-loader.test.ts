@@ -74,3 +74,17 @@ test('warns and skips malformed JSON and invalid quote records', async (context)
   assert.equal(warnings.length, 2);
   assert.deepEqual(loaded, [valid]);
 });
+
+test('quote loader preserves optional monotonic timestamp', async (context) => {
+  const record = {
+    recordedAt: 2_001,
+    quote: { ...quote('okx', 2_000), receivedMonotonicMs: 99.5 },
+  };
+  const temporary = await fixture([JSON.stringify(record)]);
+  context.after(() => rm(temporary.root, { recursive: true, force: true }));
+  const loaded = [];
+  for await (const value of loadMarketQuoteRecords(temporary.file)) {
+    loaded.push(value);
+  }
+  assert.equal(loaded[0]?.quote.receivedMonotonicMs, 99.5);
+});

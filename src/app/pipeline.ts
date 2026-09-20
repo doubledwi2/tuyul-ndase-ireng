@@ -4,6 +4,7 @@ import {
   type OpportunityQualityConfig,
 } from '../config/opportunity.js';
 import { TARGET_BTC_SIZE } from '../config/simulation.js';
+import { TIMING_CONFIG, type TimingConfig } from '../config/timing.js';
 import {
   OpportunityMetrics,
   type OpportunityMetricsSummary,
@@ -36,6 +37,14 @@ import {
   isValidNormalizedOrderBook,
   type NormalizedOrderBook,
 } from '../types/orderbook.js';
+import {
+  DETERMINISTIC_HEALTHY_CLOCK,
+  type ClockHealth,
+} from '../timing/clock-health.js';
+import {
+  assessSynchronization,
+  type SyncAssessment,
+} from '../timing/sync-model.js';
 
 export interface PipelineSnapshot {
   bybitQuote: BestQuote;
@@ -49,6 +58,8 @@ export interface DepthPipelineSnapshot {
   okxBook: NormalizedOrderBook;
   comparisons: DepthComparisons;
   qualifications: OpportunityQualifications;
+  syncAssessment: SyncAssessment;
+  processingDurationMs: number | null;
 }
 
 export type OpportunityQualifications = [
@@ -62,6 +73,8 @@ export interface MarketPipelineOptions {
   fees?: FeeConfig;
   targetBaseSize?: number;
   qualityConfig?: OpportunityQualityConfig;
+  timingConfig?: TimingConfig;
+  monotonicNow?: () => number;
 }
 
 export class MarketPipeline {
@@ -133,6 +146,7 @@ export class MarketPipeline {
       ),
       processingTimestamp,
       false,
+      undefined,
     );
 
     return pipelineSnapshot;
@@ -141,6 +155,7 @@ export class MarketPipeline {
   processOrderBook(
     orderBook: NormalizedOrderBook,
     processingTimestamp = Date.now(),
+    clockHealth: ClockHealth = DETERMINISTIC_HEALTHY_CLOCK,
   ): DepthPipelineSnapshot | null {
     if (!isValidNormalizedOrderBook(orderBook)) {
       return null;
@@ -162,23 +177,53 @@ export class MarketPipeline {
     ) {
       return null;
     }
+    const syncAssessment = assessSynchronization(
+      bybitBook,
+      okxBook,
+      processingTimestamp,
+      clockHealth,
+      this.options.timingConfig ?? TIMING_CONFIG,
+    );
+    const qualifications = comparisons.map((comparison) =>
+      qualifyOpportunity(
+        comparison,
+        this.options.qualityConfig ?? OPPORTUNITY_QUALITY_CONFIG,
+        syncAssessment,
+      ),
+    ) as OpportunityQualifications;
+    const processingCompletedMonotonicMs = this.options.monotonicNow?.();
+    const receivedMonotonicMs = orderBook.receivedMonotonicMs ?? null;
+    const measuredDuration =
+      processingCompletedMonotonicMs !== undefined &&
+      receivedMonotonicMs !== null
+        ? processingCompletedMonotonicMs - receivedMonotonicMs
+        : null;
+    const processingDurationMs =
+      measuredDuration !== null &&
+      Number.isFinite(measuredDuration) &&
+      measuredDuration >= 0
+        ? measuredDuration
+        : null;
     const snapshot: DepthPipelineSnapshot = {
       bybitBook,
       okxBook,
       comparisons,
-      qualifications: comparisons.map((comparison) =>
-        qualifyOpportunity(
-          comparison,
-          this.options.qualityConfig ?? OPPORTUNITY_QUALITY_CONFIG,
-        ),
-      ) as OpportunityQualifications,
+      qualifications,
+      syncAssessment,
+      processingDurationMs,
     };
     this.latestDepthSnapshot = snapshot;
+    this.opportunityMetrics.recordTiming(
+      syncAssessment,
+      processingDurationMs,
+      orderBook.exchange,
+    );
     this.processOpportunityComparisons(
       comparisons,
       snapshot.qualifications,
       processingTimestamp,
       true,
+      syncAssessment,
     );
     return snapshot;
   }
@@ -188,6 +233,7 @@ export class MarketPipeline {
     qualifications: readonly OpportunityQualification[],
     processingTimestamp: number,
     recordComparisonMetrics: boolean,
+    syncAssessment: SyncAssessment | undefined,
   ): void {
     for (const [index, comparison] of comparisons.entries()) {
       const qualification = qualifications[index];
@@ -201,6 +247,7 @@ export class MarketPipeline {
         comparison,
         processingTimestamp,
         qualification,
+        syncAssessment,
       );
       if (event === null) {
         continue;

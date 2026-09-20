@@ -38,6 +38,15 @@ function parseBestQuote(value: unknown): BestQuote | null {
   ) {
     return null;
   }
+  if (
+    value.receivedMonotonicMs !== undefined &&
+    value.receivedMonotonicMs !== null &&
+    (typeof value.receivedMonotonicMs !== 'number' ||
+      !Number.isFinite(value.receivedMonotonicMs) ||
+      value.receivedMonotonicMs < 0)
+  ) {
+    return null;
+  }
 
   const quote: BestQuote = {
     exchange: value.exchange,
@@ -49,6 +58,9 @@ function parseBestQuote(value: unknown): BestQuote | null {
     exchangeTimestamp: value.exchangeTimestamp,
     matchingEngineTimestamp: value.matchingEngineTimestamp,
     receivedTimestamp: value.receivedTimestamp,
+    ...(value.receivedMonotonicMs !== undefined
+      ? { receivedMonotonicMs: value.receivedMonotonicMs as number | null }
+      : {}),
   };
 
   return isValidBestQuote(quote) ? quote : null;

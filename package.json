@@ -1,8 +1,8 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
-  "description": "Depth-aware BTC/USDT opportunity quality analyzer",
+  "description": "Depth-aware BTC/USDT analyzer with explicit timing diagnostics",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -10,7 +10,7 @@
     "replay:book": "tsx src/replay-book.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/app/*.test.ts",
+    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

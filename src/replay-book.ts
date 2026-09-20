@@ -3,6 +3,7 @@ import {
   OPPORTUNITY_QUALITY_CONFIG,
   type OpportunityQualityConfig,
 } from './config/opportunity.js';
+import { TIMING_CONFIG, type TimingConfig } from './config/timing.js';
 import { EventRecorder } from './recording/event-recorder.js';
 import { DEFAULT_ORDERBOOK_RECORD_PATH } from './recording/orderbook-recorder.js';
 import { replayOrderBooks } from './replay/orderbook-replay-engine.js';
@@ -18,6 +19,7 @@ interface ReplayArguments {
   filePath: string;
   speed: ReplaySpeed;
   qualityConfig: OpportunityQualityConfig;
+  timingConfig: TimingConfig;
 }
 
 function nonNegativeNumber(option: string, value: string | undefined): number {
@@ -34,6 +36,7 @@ function parseArguments(args: readonly string[]): ReplayArguments {
   const qualityConfig: OpportunityQualityConfig = {
     ...OPPORTUNITY_QUALITY_CONFIG,
   };
+  const timingConfig: TimingConfig = { ...TIMING_CONFIG };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const value = args[index + 1];
@@ -66,7 +69,25 @@ function parseArguments(args: readonly string[]): ReplayArguments {
       continue;
     }
     if (argument === '--max-sync-diff') {
-      qualityConfig.maxSyncDiffMsForQualified = nonNegativeNumber(
+      timingConfig.maxReceiveSkewMs = nonNegativeNumber(
+        argument,
+        value,
+      );
+      index += 1;
+      continue;
+    }
+    if (argument === '--max-receive-skew') {
+      timingConfig.maxReceiveSkewMs = nonNegativeNumber(argument, value);
+      index += 1;
+      continue;
+    }
+    if (argument === '--max-book-age') {
+      timingConfig.maxBookAgeMs = nonNegativeNumber(argument, value);
+      index += 1;
+      continue;
+    }
+    if (argument === '--max-source-skew') {
+      timingConfig.maxSourceTimestampSkewMs = nonNegativeNumber(
         argument,
         value,
       );
@@ -78,11 +99,11 @@ function parseArguments(args: readonly string[]): ReplayArguments {
         'Use --file <path>, --speed realtime|fast|max, and optional quality overrides.',
     );
   }
-  return { filePath, speed, qualityConfig };
+  return { filePath, speed, qualityConfig, timingConfig };
 }
 
 async function main(): Promise<void> {
-  const { filePath, speed, qualityConfig } = parseArguments(
+  const { filePath, speed, qualityConfig, timingConfig } = parseArguments(
     process.argv.slice(2),
   );
   const eventPath = createReplayEventRecordPath('book');
@@ -90,6 +111,7 @@ async function main(): Promise<void> {
     eventRecorder: new EventRecorder(eventPath),
     onEvent: printOpportunityEvent,
     qualityConfig,
+    timingConfig,
   });
   console.log(`[BOOK REPLAY] File: ${filePath}`);
   console.log(`[BOOK REPLAY] Speed: ${speed}`);
@@ -98,6 +120,11 @@ async function main(): Promise<void> {
       `PnL>=${qualityConfig.minNetPnlUsdt} USDT, ` +
       `duration>=${qualityConfig.minActiveDurationMs} ms, ` +
       `sync<=${qualityConfig.maxSyncDiffMsForQualified} ms`,
+  );
+  console.log(
+    `[BOOK REPLAY] Timing: receive skew<=${timingConfig.maxReceiveSkewMs} ms, ` +
+      `book age<=${timingConfig.maxBookAgeMs} ms, ` +
+      `source skew<=${timingConfig.maxSourceTimestampSkewMs} ms`,
   );
   const result = await replayOrderBooks({
     filePath,
@@ -113,6 +140,9 @@ async function main(): Promise<void> {
       snapshot.comparisons,
       snapshot.qualifications,
       qualityConfig,
+      snapshot.syncAssessment,
+      snapshot.processingDurationMs,
+      timingConfig,
     );
   }
   printMetricsSummary(pipeline.getMetricsSummary());

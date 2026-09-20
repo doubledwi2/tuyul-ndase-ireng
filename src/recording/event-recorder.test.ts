@@ -49,6 +49,12 @@ function event(id: string, state: OpportunityEvent['state'] = 'DETECTED'): Oppor
     currentTradableSize: 0.3,
     peakTradableSize: 0.5,
     currentReceiveTimeDifferenceMs: 10,
+    currentReceiveSkewMs: 10,
+    currentSourceTimestampSkewMs: 5,
+    currentMaxBookAgeMs: 20,
+    currentSyncStatus: 'SYNC_HEALTHY',
+    currentSyncReasons: [],
+    peakReceiveSkewMs: 15,
     everActive: true,
     everInvalidSync: false,
   };

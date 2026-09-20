@@ -117,7 +117,7 @@ test('fees can make a fully-filled simulated result negative', () => {
   assert.equal(comparisons[0].status, 'EXECUTABLE_NET_ZERO_OR_NEGATIVE');
 });
 
-test('STALE overrides otherwise positive economic status', () => {
+test('economic status remains separate from legacy receive-time sync diagnostic', () => {
   const comparisons = compareOrderBooks(
     book('bybit', [{ price: 99, size: 1 }], [{ price: 100, size: 1 }], NOW),
     book('okx', [{ price: 102, size: 1 }], [{ price: 103, size: 1 }], NOW - 251),
@@ -127,5 +127,6 @@ test('STALE overrides otherwise positive economic status', () => {
   );
   assert.ok(comparisons);
   assert.ok((comparisons[0].estimatedNetPnlAbsolute ?? 0) > 0);
-  assert.equal(comparisons[0].status, 'STALE');
+  assert.equal(comparisons[0].syncStatus, 'STALE');
+  assert.equal(comparisons[0].status, 'EXECUTABLE_NET_POSITIVE');
 });

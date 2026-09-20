@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { performance } from 'node:perf_hooks';
 
 import type {
   NormalizedOrderBook,
@@ -34,7 +35,11 @@ export class OkxOrderBookState {
   private initialized = false;
   private lastSequenceId: number | null = null;
 
-  applyMessage(payload: string, receivedTimestamp: number): OkxBookUpdateResult {
+  applyMessage(
+    payload: string,
+    receivedTimestamp: number,
+    receivedMonotonicMs: number | null = null,
+  ): OkxBookUpdateResult {
     const ignored: OkxBookUpdateResult = {
       orderBook: null,
       sequenceGap: false,
@@ -107,6 +112,7 @@ export class OkxOrderBookState {
         timestamp(data.ts),
         null,
         receivedTimestamp,
+        receivedMonotonicMs,
       ),
       sequenceGap: false,
     };
@@ -172,9 +178,14 @@ export function connectOkx(onOrderBook: OrderBookHandler): OrderBookConnection {
       });
       socket.on('message', (data) => {
         const receivedTimestamp = Date.now();
+        const receivedMonotonicMs = performance.now();
         lastMessageAt = receivedTimestamp;
         pingSentAt = null;
-        const result = state.applyMessage(data.toString(), receivedTimestamp);
+        const result = state.applyMessage(
+          data.toString(),
+          receivedTimestamp,
+          receivedMonotonicMs,
+        );
         if (result.sequenceGap) {
           console.error('[OKX] Order book sequence gap; reconnecting');
           socket?.terminate();

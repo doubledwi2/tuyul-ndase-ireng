@@ -104,9 +104,7 @@ function createDepthComparison(
   }
 
   let status: DepthComparisonStatus;
-  if (syncStatus === 'STALE') {
-    status = 'STALE';
-  } else if (!fullyFilled) {
+  if (!fullyFilled) {
     status = 'INSUFFICIENT_DEPTH';
   } else if ((estimatedNetPnlAbsolute ?? 0) > 0) {
     status = 'EXECUTABLE_NET_POSITIVE';

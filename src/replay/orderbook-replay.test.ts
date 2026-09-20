@@ -77,3 +77,20 @@ test('order book replay preserves order and recordedAt timing', async (context) 
   assert.deepEqual(exchanges, ['bybit', 'okx', 'bybit']);
   assert.equal(result.processedRecords, 3);
 });
+
+test('order book loader preserves optional monotonic timestamp', async (context) => {
+  const record: OrderBookRecord = {
+    recordedAt: 2_000,
+    orderBook: {
+      ...book('bybit', 1_999),
+      receivedMonotonicMs: 42.25,
+    },
+  };
+  const temporary = await fixture([JSON.stringify(record)]);
+  context.after(() => rm(temporary.root, { recursive: true, force: true }));
+  const loaded: OrderBookRecord[] = [];
+  for await (const value of loadOrderBookRecords(temporary.file)) {
+    loaded.push(value);
+  }
+  assert.equal(loaded[0]?.orderBook.receivedMonotonicMs, 42.25);
+});

@@ -14,6 +14,10 @@ import { replayMarketData } from '../replay/replay-engine.js';
 import { replayOrderBooks } from '../replay/orderbook-replay-engine.js';
 import { MarketPipeline } from './pipeline.js';
 import type { NormalizedOrderBook } from '../types/orderbook.js';
+import {
+  DETERMINISTIC_HEALTHY_CLOCK,
+  type ClockHealth,
+} from '../timing/clock-health.js';
 
 function quote(
   exchange: BestQuote['exchange'],
@@ -251,6 +255,12 @@ test('replay quality config override can change qualification result', async (co
       minActiveDurationMs: 100,
       maxSyncDiffMsForQualified: 250,
     },
+    timingConfig: {
+      maxReceiveSkewMs: 250,
+      maxBookAgeMs: 500,
+      maxSourceTimestampSkewMs: 250,
+      clockJumpThresholdMs: 50,
+    },
     onEvent: (event) => looseEvents.push(event),
   });
   const strict = new MarketPipeline({
@@ -261,6 +271,12 @@ test('replay quality config override can change qualification result', async (co
       minNetPnlUsdt: 0.01,
       minActiveDurationMs: 100,
       maxSyncDiffMsForQualified: 250,
+    },
+    timingConfig: {
+      maxReceiveSkewMs: 250,
+      maxBookAgeMs: 500,
+      maxSourceTimestampSkewMs: 250,
+      clockJumpThresholdMs: 50,
     },
     onEvent: (event) => strictEvents.push(event),
   });
@@ -282,4 +298,78 @@ test('replay quality config override can change qualification result', async (co
   assert.ok(loose.getMetricsSummary().qualifiedComparisons > 0);
   assert.equal(strict.getMetricsSummary().qualifiedComparisons, 0);
   assert.ok(strict.getMetricsSummary().rejectedSmallNetSpread > 0);
+});
+
+test('sync health invalidates and recovery restarts qualification duration', () => {
+  const events: OpportunityEvent[] = [];
+  const pipeline = new MarketPipeline({
+    fees: {
+      bybit: { takerRate: 0 },
+      okx: { takerRate: 0 },
+    },
+    targetBaseSize: 0.2,
+    onEvent: (event) => events.push(event),
+  });
+  const unhealthyClock: ClockHealth = {
+    status: 'CLOCK_JUMP_DETECTED',
+    wallTimestamp: 5_120,
+    monotonicTimestamp: 120,
+    clockDriftDeltaMs: 75,
+  };
+
+  pipeline.processOrderBook(orderBook('bybit', 99, 100, 5_000), 5_000);
+  pipeline.processOrderBook(orderBook('okx', 102, 103, 5_010), 5_010);
+  pipeline.processOrderBook(orderBook('bybit', 99, 100, 5_040), 5_040);
+  pipeline.processOrderBook(orderBook('okx', 102, 103, 5_110), 5_110);
+  pipeline.processOrderBook(
+    orderBook('bybit', 99, 100, 5_120),
+    5_120,
+    unhealthyClock,
+  );
+  pipeline.processOrderBook(
+    orderBook('okx', 102, 103, 5_130),
+    5_130,
+    DETERMINISTIC_HEALTHY_CLOCK,
+  );
+  pipeline.processOrderBook(orderBook('bybit', 99, 100, 5_180), 5_180);
+  pipeline.processOrderBook(orderBook('okx', 102, 103, 5_230), 5_230);
+  pipeline.processOrderBook(
+    orderBook('bybit', 99, 103, 5_240),
+    5_240,
+    unhealthyClock,
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.state),
+    [
+      'DETECTED',
+      'VALIDATING',
+      'QUALIFIED',
+      'INVALID_SYNC',
+      'DETECTED',
+      'VALIDATING',
+      'QUALIFIED',
+      'DISAPPEARED',
+    ],
+  );
+  assert.equal(events[3]?.currentSyncStatus, 'CLOCK_UNHEALTHY');
+  assert.deepEqual(events[3]?.currentSyncReasons, ['CLOCK_UNHEALTHY']);
+  assert.deepEqual(events.at(-1)?.currentQualificationReasons, [
+    'NOT_NET_POSITIVE',
+    'STALE',
+  ]);
+  assert.equal(events.at(-1)?.everQualified, true);
+});
+
+test('processing duration uses injected monotonic time when available', () => {
+  const pipeline = new MarketPipeline({ monotonicNow: () => 205.5 });
+  pipeline.processOrderBook(
+    { ...orderBook('bybit', 99, 100, 6_000), receivedMonotonicMs: 100 },
+    6_000,
+  );
+  const snapshot = pipeline.processOrderBook(
+    { ...orderBook('okx', 102, 103, 6_010), receivedMonotonicMs: 200 },
+    6_010,
+  );
+  assert.equal(snapshot?.processingDurationMs, 5.5);
 });

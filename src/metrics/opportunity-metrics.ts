@@ -1,6 +1,8 @@
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { DepthComparison } from '../scanner/depth-comparator.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
+import type { NormalizedOrderBook } from '../types/orderbook.js';
+import type { SyncAssessment } from '../timing/sync-model.js';
 
 export interface OpportunityMetricsSummary {
   comparisonsTotal: number;
@@ -18,6 +20,39 @@ export interface OpportunityMetricsSummary {
   rejectedStale: number;
   averageBuySlippagePercent: number | null;
   averageSellSlippagePercent: number | null;
+  bybitAverageObservedIngressMs: number | null;
+  bybitP50ObservedIngressMs: number | null;
+  bybitP95ObservedIngressMs: number | null;
+  bybitP99ObservedIngressMs: number | null;
+  bybitMaxObservedIngressMs: number | null;
+  okxAverageObservedIngressMs: number | null;
+  okxP50ObservedIngressMs: number | null;
+  okxP95ObservedIngressMs: number | null;
+  okxP99ObservedIngressMs: number | null;
+  okxMaxObservedIngressMs: number | null;
+  averageReceiveSkewMs: number | null;
+  p50ReceiveSkewMs: number | null;
+  p95ReceiveSkewMs: number | null;
+  p99ReceiveSkewMs: number | null;
+  maxReceiveSkewMs: number | null;
+  averageSourceTimestampSkewMs: number | null;
+  p95SourceTimestampSkewMs: number | null;
+  p99SourceTimestampSkewMs: number | null;
+  p50MaxBookAgeMs: number | null;
+  p95MaxBookAgeMs: number | null;
+  p99MaxBookAgeMs: number | null;
+  averageProcessingDurationMs: number | null;
+  p50ProcessingDurationMs: number | null;
+  p95ProcessingDurationMs: number | null;
+  p99ProcessingDurationMs: number | null;
+  maxProcessingDurationMs: number | null;
+  timingAssessmentsTotal: number;
+  syncHealthyCount: number;
+  receiveSkewHighCount: number;
+  sourceSkewHighCount: number;
+  bookTooOldCount: number;
+  clockUnhealthyCount: number;
+  timestampAnomalyCount: number;
   totalCompletedEvents: number;
   eventsEverActive: number;
   eventsNeverActive: number;
@@ -87,6 +122,19 @@ export class OpportunityMetrics {
   private rejectedStale = 0;
   private readonly buySlippages: number[] = [];
   private readonly sellSlippages: number[] = [];
+  private readonly bybitObservedIngress: number[] = [];
+  private readonly okxObservedIngress: number[] = [];
+  private readonly receiveSkews: number[] = [];
+  private readonly sourceTimestampSkews: number[] = [];
+  private readonly maxBookAges: number[] = [];
+  private readonly processingDurations: number[] = [];
+  private timingAssessmentsTotal = 0;
+  private syncHealthyCount = 0;
+  private receiveSkewHighCount = 0;
+  private sourceSkewHighCount = 0;
+  private bookTooOldCount = 0;
+  private clockUnhealthyCount = 0;
+  private timestampAnomalyCount = 0;
   private totalCompletedEvents = 0;
   private eventsEverActive = 0;
   private invalidSyncEvents = 0;
@@ -170,6 +218,52 @@ export class OpportunityMetrics {
     this.peakSizes.push(event.peakTradableSize);
   }
 
+  recordTiming(
+    assessment: SyncAssessment,
+    processingDurationMs: number | null,
+    updatedExchange: NormalizedOrderBook['exchange'],
+  ): void {
+    this.timingAssessmentsTotal += 1;
+    this.receiveSkews.push(assessment.receiveSkewMs);
+    this.maxBookAges.push(assessment.maxBookAgeMs);
+    if (assessment.sourceTimestampSkewMs !== null) {
+      this.sourceTimestampSkews.push(assessment.sourceTimestampSkewMs);
+    }
+    if (
+      updatedExchange === 'bybit' &&
+      assessment.bybitObservedIngressMs !== null
+    ) {
+      this.bybitObservedIngress.push(assessment.bybitObservedIngressMs);
+    }
+    if (
+      updatedExchange === 'okx' &&
+      assessment.okxObservedIngressMs !== null
+    ) {
+      this.okxObservedIngress.push(assessment.okxObservedIngressMs);
+    }
+    if (processingDurationMs !== null) {
+      this.processingDurations.push(processingDurationMs);
+    }
+    if (assessment.status === 'SYNC_HEALTHY') {
+      this.syncHealthyCount += 1;
+    }
+    if (assessment.reasons.includes('RECEIVE_SKEW_HIGH')) {
+      this.receiveSkewHighCount += 1;
+    }
+    if (assessment.reasons.includes('SOURCE_SKEW_HIGH')) {
+      this.sourceSkewHighCount += 1;
+    }
+    if (assessment.reasons.includes('BOOK_TOO_OLD')) {
+      this.bookTooOldCount += 1;
+    }
+    if (assessment.reasons.includes('CLOCK_UNHEALTHY')) {
+      this.clockUnhealthyCount += 1;
+    }
+    if (assessment.reasons.includes('TIMESTAMP_ANOMALY')) {
+      this.timestampAnomalyCount += 1;
+    }
+  }
+
   getSummary(): OpportunityMetricsSummary {
     return {
       comparisonsTotal: this.comparisonsTotal,
@@ -187,6 +281,72 @@ export class OpportunityMetrics {
       rejectedStale: this.rejectedStale,
       averageBuySlippagePercent: average(this.buySlippages),
       averageSellSlippagePercent: average(this.sellSlippages),
+      bybitAverageObservedIngressMs: average(this.bybitObservedIngress),
+      bybitP50ObservedIngressMs: nearestRankPercentile(
+        this.bybitObservedIngress,
+        50,
+      ),
+      bybitP95ObservedIngressMs: nearestRankPercentile(
+        this.bybitObservedIngress,
+        95,
+      ),
+      bybitP99ObservedIngressMs: nearestRankPercentile(
+        this.bybitObservedIngress,
+        99,
+      ),
+      bybitMaxObservedIngressMs: maximum(this.bybitObservedIngress),
+      okxAverageObservedIngressMs: average(this.okxObservedIngress),
+      okxP50ObservedIngressMs: nearestRankPercentile(
+        this.okxObservedIngress,
+        50,
+      ),
+      okxP95ObservedIngressMs: nearestRankPercentile(
+        this.okxObservedIngress,
+        95,
+      ),
+      okxP99ObservedIngressMs: nearestRankPercentile(
+        this.okxObservedIngress,
+        99,
+      ),
+      okxMaxObservedIngressMs: maximum(this.okxObservedIngress),
+      averageReceiveSkewMs: average(this.receiveSkews),
+      p50ReceiveSkewMs: nearestRankPercentile(this.receiveSkews, 50),
+      p95ReceiveSkewMs: nearestRankPercentile(this.receiveSkews, 95),
+      p99ReceiveSkewMs: nearestRankPercentile(this.receiveSkews, 99),
+      maxReceiveSkewMs: maximum(this.receiveSkews),
+      averageSourceTimestampSkewMs: average(this.sourceTimestampSkews),
+      p95SourceTimestampSkewMs: nearestRankPercentile(
+        this.sourceTimestampSkews,
+        95,
+      ),
+      p99SourceTimestampSkewMs: nearestRankPercentile(
+        this.sourceTimestampSkews,
+        99,
+      ),
+      p50MaxBookAgeMs: nearestRankPercentile(this.maxBookAges, 50),
+      p95MaxBookAgeMs: nearestRankPercentile(this.maxBookAges, 95),
+      p99MaxBookAgeMs: nearestRankPercentile(this.maxBookAges, 99),
+      averageProcessingDurationMs: average(this.processingDurations),
+      p50ProcessingDurationMs: nearestRankPercentile(
+        this.processingDurations,
+        50,
+      ),
+      p95ProcessingDurationMs: nearestRankPercentile(
+        this.processingDurations,
+        95,
+      ),
+      p99ProcessingDurationMs: nearestRankPercentile(
+        this.processingDurations,
+        99,
+      ),
+      maxProcessingDurationMs: maximum(this.processingDurations),
+      timingAssessmentsTotal: this.timingAssessmentsTotal,
+      syncHealthyCount: this.syncHealthyCount,
+      receiveSkewHighCount: this.receiveSkewHighCount,
+      sourceSkewHighCount: this.sourceSkewHighCount,
+      bookTooOldCount: this.bookTooOldCount,
+      clockUnhealthyCount: this.clockUnhealthyCount,
+      timestampAnomalyCount: this.timestampAnomalyCount,
       totalCompletedEvents: this.totalCompletedEvents,
       eventsEverActive: this.eventsEverActive,
       eventsNeverActive: this.totalCompletedEvents - this.eventsEverActive,

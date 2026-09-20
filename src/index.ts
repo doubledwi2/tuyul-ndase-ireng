@@ -1,4 +1,7 @@
+import { performance } from 'node:perf_hooks';
+
 import { MarketPipeline } from './app/pipeline.js';
+import { CLOCK_JUMP_THRESHOLD_MS } from './config/timing.js';
 import { connectBybit } from './exchanges/bybit.js';
 import { connectOkx } from './exchanges/okx.js';
 import { EventRecorder } from './recording/event-recorder.js';
@@ -15,15 +18,18 @@ import {
   printMetricsSummary,
   printOpportunityEvent,
 } from './ui/console.js';
+import { ClockHealthMonitor } from './timing/clock-health.js';
 
 const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;
 const eventRecorder = new EventRecorder();
 const marketRecorder = new MarketRecorder();
 const orderBookRecorder = new OrderBookRecorder();
+const clockHealthMonitor = new ClockHealthMonitor(CLOCK_JUMP_THRESHOLD_MS);
 const pipeline = new MarketPipeline({
   eventRecorder,
   onEvent: printOpportunityEvent,
+  monotonicNow: () => performance.now(),
 });
 
 function receiveOrderBook(orderBook: NormalizedOrderBook): void {
@@ -33,7 +39,11 @@ function receiveOrderBook(orderBook: NormalizedOrderBook): void {
   }
 
   const recordedAt = Date.now();
-  pipeline.processOrderBook(orderBook, recordedAt);
+  const clockHealth = clockHealthMonitor.sample(
+    orderBook.receivedTimestamp,
+    orderBook.receivedMonotonicMs ?? performance.now(),
+  );
+  pipeline.processOrderBook(orderBook, recordedAt, clockHealth);
   void orderBookRecorder.record(orderBook, recordedAt);
   const quote = deriveBestQuote(orderBook);
   if (quote !== null) {
@@ -49,7 +59,13 @@ const connections: ExchangeConnection[] = [
 const outputTimer = setInterval(() => {
   const snapshot = pipeline.getLatestDepthSnapshot();
   if (snapshot !== null) {
-    printDepthComparisonSummary(snapshot.comparisons, snapshot.qualifications);
+    printDepthComparisonSummary(
+      snapshot.comparisons,
+      snapshot.qualifications,
+      undefined,
+      snapshot.syncAssessment,
+      snapshot.processingDurationMs,
+    );
   }
 }, OUTPUT_INTERVAL_MS);
 
@@ -71,6 +87,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   for (const connection of connections) {
     connection.close();
   }
+
+  printMetricsSummary(pipeline.getMetricsSummary());
 
   await Promise.all([
     marketRecorder.flush(),

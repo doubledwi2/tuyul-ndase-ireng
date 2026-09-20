@@ -37,6 +37,7 @@ test('OKX snapshot builds a sorted normalized book with correct top levels', () 
       10,
     ),
     RECEIVED,
+    84.5,
   );
 
   assert.equal(result.sequenceGap, false);
@@ -49,6 +50,7 @@ test('OKX snapshot builds a sorted normalized book with correct top levels', () 
     { price: 102, size: 3 },
   ]);
   assert.equal(result.orderBook?.matchingEngineTimestamp, null);
+  assert.equal(result.orderBook?.receivedMonotonicMs, 84.5);
 });
 
 test('OKX delta updates, inserts, and removes price levels', () => {

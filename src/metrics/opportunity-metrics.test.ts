@@ -5,6 +5,8 @@ import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { DepthComparison } from '../scanner/depth-comparator.js';
 import type { ExecutionSimulation } from '../scanner/execution-simulator.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
+import type { SyncAssessment } from '../timing/sync-model.js';
+import { DETERMINISTIC_HEALTHY_CLOCK } from '../timing/clock-health.js';
 import { OpportunityMetrics } from './opportunity-metrics.js';
 
 function completedEvent(
@@ -47,6 +49,12 @@ function completedEvent(
     currentTradableSize: 0.3,
     peakTradableSize: 0.5,
     currentReceiveTimeDifferenceMs: 10,
+    currentReceiveSkewMs: 10,
+    currentSourceTimestampSkewMs: 5,
+    currentMaxBookAgeMs: 20,
+    currentSyncStatus: 'SYNC_HEALTHY',
+    currentSyncReasons: [],
+    peakReceiveSkewMs: 15,
     everActive: false,
     everInvalidSync: false,
     ...overrides,
@@ -114,6 +122,28 @@ function qualification(
   };
 }
 
+function syncAssessment(
+  receiveSkewMs: number,
+  overrides: Partial<SyncAssessment> = {},
+): SyncAssessment {
+  return {
+    status: 'SYNC_HEALTHY',
+    receiveSkewMs,
+    sourceTimestampSkewMs: receiveSkewMs + 1,
+    matchingEngineSkewMs: null,
+    bybitBookAgeMs: 1,
+    okxBookAgeMs: 2,
+    maxBookAgeMs: 2,
+    bybitObservedIngressMs: 10,
+    okxObservedIngressMs: 20,
+    bybitObservedMatchingEngineIngressMs: 11,
+    okxObservedMatchingEngineIngressMs: null,
+    clockHealth: DETERMINISTIC_HEALTHY_CLOCK,
+    reasons: [],
+    ...overrides,
+  };
+}
+
 test('empty metrics are zero and null safe', () => {
   const summary = new OpportunityMetrics().getSummary();
 
@@ -129,6 +159,8 @@ test('empty metrics are zero and null safe', () => {
   assert.equal(summary.averagePeakSpreadPercent, null);
   assert.equal(summary.averagePeakNetSpreadPercent, null);
   assert.equal(summary.averagePeakNetPnlAbsolute, null);
+  assert.equal(summary.p95ReceiveSkewMs, null);
+  assert.equal(summary.syncHealthyCount, 0);
 });
 
 test('counts completed events and ignores incomplete events', () => {
@@ -284,4 +316,34 @@ test('aggregates qualified event count and qualification times', () => {
   assert.equal(summary.averageTimeToQualifiedMs, 150);
   assert.equal(summary.p50TimeToQualifiedMs, 100);
   assert.equal(summary.p95TimeToQualifiedMs, 200);
+});
+
+test('aggregates timing distributions and sync reason counts', () => {
+  const metrics = new OpportunityMetrics();
+  metrics.recordTiming(syncAssessment(10), 0.1, 'bybit');
+  metrics.recordTiming(syncAssessment(20), 0.2, 'okx');
+  metrics.recordTiming(syncAssessment(30), 0.3, 'bybit');
+  metrics.recordTiming(
+    syncAssessment(120, {
+      status: 'RECEIVE_SKEW_HIGH',
+      maxBookAgeMs: 600,
+      reasons: ['RECEIVE_SKEW_HIGH', 'BOOK_TOO_OLD'],
+    }),
+    0.4,
+    'okx',
+  );
+
+  const summary = metrics.getSummary();
+  assert.equal(summary.timingAssessmentsTotal, 4);
+  assert.equal(summary.syncHealthyCount, 3);
+  assert.equal(summary.receiveSkewHighCount, 1);
+  assert.equal(summary.bookTooOldCount, 1);
+  assert.equal(summary.p50ReceiveSkewMs, 20);
+  assert.equal(summary.p95ReceiveSkewMs, 120);
+  assert.equal(summary.p99ReceiveSkewMs, 120);
+  assert.equal(summary.maxReceiveSkewMs, 120);
+  assert.equal(summary.bybitAverageObservedIngressMs, 10);
+  assert.equal(summary.okxAverageObservedIngressMs, 20);
+  assert.equal(summary.p95ProcessingDurationMs, 0.4);
+  assert.equal(summary.maxProcessingDurationMs, 0.4);
 });

@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Executable Opportunity Quality Filter v0.2.2 adalah Phase 2.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT dari Bybit Spot dan OKX Spot, mensimulasikan hypothetical taker execution, menghitung estimated net result berdasarkan VWAP dan fee, lalu menilai kualitas candidate dengan threshold yang eksplisit.
+Latency, Clock Health & Synchronization Model v0.2.3 adalah Phase 2.3 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, mensimulasikan hypothetical taker execution, lalu menilai economics, timing health, dan kualitas candidate secara terpisah.
 
 Aplikasi ini tidak memakai API key atau autentikasi dan tidak melakukan trading maupun order execution. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill. Persistence hanya berupa file JSONL lokal; tidak ada database.
 
@@ -19,15 +19,16 @@ Output terminal dibatasi sekitar satu kali setiap 500 ms agar tetap mudah dibaca
 
 ## Normalized order book, quote, dan timestamp
 
-Model `NormalizedOrderBook` berisi array `bids` dan `asks` dengan pasangan numeric `price`/`size`, ditambah tiga timestamp:
+Model `NormalizedOrderBook` dan `BestQuote` membawa empat timestamp:
 
 - `exchangeTimestamp`: timestamp update yang dikirim exchange.
 - `matchingEngineTimestamp`: waktu matching engine menghasilkan order book, jika feed menyediakannya.
 - `receivedTimestamp`: `Date.now()` yang diambil segera saat message diterima, sebelum parsing.
+- `receivedMonotonicMs`: `performance.now()` yang diambil saat penerimaan untuk interval lokal yang tahan terhadap perubahan wall clock.
 
 Bybit menyediakan `ts` sebagai `exchangeTimestamp` dan `cts` sebagai `matchingEngineTimestamp`. Pada OKX `books`, `ts` dipakai sebagai `exchangeTimestamp`; feed ini tidak mendefinisikannya sebagai matching-engine timestamp yang ekuivalen dengan Bybit `cts`, sehingga `matchingEngineTimestamp` diisi `null`.
 
-`matchingEngineTimestamp` tetap nullable; collector tidak membuat timestamp pengganti. `BestQuote` tetap dipertahankan dan diturunkan dari level pertama normalized book untuk compatibility serta replay dataset lama.
+`matchingEngineTimestamp` tetap nullable; collector tidak membuat timestamp pengganti. Field `receivedMonotonicMs` juga nullable/optional agar dataset lama tetap dapat direplay tanpa mengarang monotonic timestamp historis.
 
 ## Depth simulation dan fee-aware comparison
 
@@ -74,22 +75,44 @@ estimatedNetSpreadPercent = (estimatedNetPnlAbsolute / simulatedBuyNotional) * 1
 
 Status depth comparison:
 
-- `EXECUTABLE_NET_POSITIVE`: sync valid, kedua leg fully filled, estimated net PnL positif.
-- `EXECUTABLE_NET_ZERO_OR_NEGATIVE`: sync valid, kedua leg fully filled, estimated net PnL tidak positif.
+- `EXECUTABLE_NET_POSITIVE`: kedua leg fully filled dan estimated net PnL positif.
+- `EXECUTABLE_NET_ZERO_OR_NEGATIVE`: kedua leg fully filled tetapi estimated net PnL tidak positif.
 - `INSUFFICIENT_DEPTH`: salah satu leg tidak dapat memenuhi `TARGET_BTC_SIZE`.
-- `STALE`: comparison tidak memenuhi baseline synchronization.
+
+Economics status tidak lagi diubah menjadi `STALE` oleh comparator order-book. Timing validity dinilai secara terpisah oleh `SyncAssessment`. Field/status lama tetap dipertahankan hanya untuk compatibility jalur replay `BestQuote`.
 
 Istilah executable hanya berarti snapshot order book secara teoritis cukup untuk target size. Ini bukan jaminan real fill: market dapat berubah antara observasi dan kedatangan order, dan aplikasi tidak mengirim order apa pun.
 
-### Baseline synchronization
+## Timing dan synchronization model
 
-Comparator memakai `receivedTimestamp` sebagai safety check awal:
+Wall clock dan monotonic clock mempunyai fungsi berbeda:
 
-- Selisih waktu penerimaan maksimum: `250 ms`.
-- Usia quote maksimum saat comparison dibuat: `1000 ms`.
-- Comparison berstatus `SYNC_OK` hanya jika kedua syarat terpenuhi; selain itu `STALE`.
+- `Date.now()` kompatibel dengan epoch timestamp exchange dan digunakan untuk source diagnostics/book age.
+- `performance.now()` monotonic dan digunakan untuk local processing interval.
 
-Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang terlalu jauh waktunya. `SYNC_OK` bukan jaminan opportunity valid atau executable dan bukan batas ideal untuk trading.
+`observedIngressMs = receivedTimestamp - exchangeTimestamp` sengaja tidak disebut one-way network latency. Nilai ini juga mengandung clock offset antara host dan exchange, processing/publishing delay exchange, serta transport delay. Nilai negatif tidak di-clamp dan ditandai sebagai anomaly.
+
+Definisi yang tidak dicampur:
+
+- **Receive skew**: selisih wall-clock ketika dua latest book diterima host.
+- **Observed ingress delay**: selisih source/exchange timestamp dengan local receive timestamp; bukan pure network latency.
+- **Processing duration**: interval monotonic dari message diterima hingga comparison selesai.
+- **Book age**: usia latest local book ketika comparison dibuat.
+
+Baseline di `src/config/timing.ts`:
+
+```text
+MAX_RECEIVE_SKEW_MS = 100
+MAX_BOOK_AGE_MS = 500
+MAX_SOURCE_TIMESTAMP_SKEW_MS = 250
+CLOCK_JUMP_THRESHOLD_MS = 50
+```
+
+`SYNC_HEALTHY` memerlukan host clock tidak berstatus `CLOCK_JUMP_DETECTED`, receive skew dan book age di bawah batas, source timestamp skew di bawah batas jika kedua exchange menyediakannya, serta tidak ada negative/impossible timing. Source timestamp comparison hanya sanity check; bukan bukti clock exchange sempurna.
+
+Primary sync status adalah `SYNC_HEALTHY`, `RECEIVE_SKEW_HIGH`, `SOURCE_SKEW_HIGH`, `BOOK_TOO_OLD`, `CLOCK_UNHEALTHY`, atau `TIMESTAMP_ANOMALY`. Array `reasons` mempertahankan seluruh kegagalan sekaligus. Karena OKX `books` tidak menyediakan matching-engine timestamp ekuivalen Bybit `cts`, `matchingEngineSkewMs` tetap `null`.
+
+`ClockHealthMonitor` membandingkan `wallDelta - monotonicDelta`. Sampel pertama `WARMING_UP`; drift mendadak di atas 50 ms menjadi `CLOCK_JUMP_DETECTED`. Monitor hanya mendeteksi dan melaporkan—tidak mengubah clock OS atau mengompensasi timestamp. Infrastruktur VPS/NTP/chrony yang lebih ketat berada di roadmap Phase 4.
 
 ## Opportunity quality filter
 
@@ -98,13 +121,12 @@ Threshold tersebut hanya baseline engineering awal untuk mendeteksi quote yang t
 ```text
 MIN_NET_SPREAD_PERCENT = 0.03%
 MIN_NET_PNL_USDT = 0.01 USDT
-MAX_SYNC_DIFF_MS_FOR_QUALIFIED = 100 ms
 MIN_ACTIVE_DURATION_MS = 100 ms
 ```
 
-Semua nilai berada di `src/config/opportunity.ts`, dapat diinjeksi saat test/replay, dan merupakan baseline engineering—bukan rekomendasi trading. Filter menghasilkan reason terstruktur: `NOT_NET_POSITIVE`, `NET_SPREAD_TOO_SMALL`, `NET_PNL_TOO_SMALL`, `SYNC_TOO_WIDE`, `INSUFFICIENT_DEPTH`, atau `STALE`.
+Threshold economics/duration berada di `src/config/opportunity.ts`; timing threshold berada di `src/config/timing.ts`. Semuanya injectable dan merupakan baseline engineering—bukan rekomendasi trading. Field `MAX_SYNC_DIFF_MS_FOR_QUALIFIED` lama dipertahankan untuk compatibility quote replay, tetapi pipeline order-book sekarang wajib memakai `SyncAssessment.status === SYNC_HEALTHY`.
 
-`QUALIFIED` berarti kedua leg fully filled dalam simulasi, estimated net positif, melewati minimum spread dan PnL, memiliki receive-time difference maksimal 100 ms, serta mempertahankan seluruh kondisi itu minimal 100 ms. Market tetap dapat berubah sebelum hypothetical order tiba, sehingga status ini bukan jaminan actual execution.
+`QUALIFIED` berarti kedua leg fully filled dalam simulasi, estimated net positif, melewati minimum spread dan PnL, mempunyai `SYNC_HEALTHY`, serta mempertahankan seluruh kondisi itu minimal 100 ms. Market tetap dapat berubah sebelum hypothetical order tiba, sehingga status ini bukan jaminan actual execution.
 
 ## Opportunity event lifecycle
 
@@ -119,12 +141,12 @@ observasi quality-valid pertama                DETECTED
 observasi berikut sebelum minimum duration     VALIDATING
 quality-valid selama minimal 100 ms            QUALIFIED
 quality failure biasa                          DISAPPEARED
-data stale                                     INVALID_SYNC
+SyncAssessment tidak healthy                   INVALID_SYNC
 ```
 
 Data stale tidak membuat event baru. Jika event hidup menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data pulih dan seluruh rule kembali lolos, validation window dimulai ulang dari `DETECTED` dengan event ID yang sama agar interval stale tidak dihitung sebagai active duration. Jika event belum pernah qualified, `detectedAt` juga di-reset; history qualification pertama pada event yang sudah pernah qualified tetap dipertahankan.
 
-Event menyimpan `qualifiedAt`, `timeToQualifiedMs`, `everQualified`, dan `currentQualificationReasons`. Selama event hidup, collector juga memperbarui current/peak economics dan peak tradable size. State `ACTIVE` tetap ada pada type dan field history untuk kompatibilitas dataset Phase 1/2, tetapi lifecycle Phase 2.2 memancarkan `DETECTED`, `VALIDATING`, lalu `QUALIFIED`.
+Event menyimpan `qualifiedAt`, `timeToQualifiedMs`, `everQualified`, `currentQualificationReasons`, current receive/source skew, max book age, sync status/reasons, dan peak receive skew. Sync unhealthy bersifat `INVALID_SYNC`, bukan economic disappearance. Recovery me-reset validation duration window.
 
 ## Raw market recording
 
@@ -145,7 +167,7 @@ data/market-quotes.jsonl
 Satu baris berisi satu object JSON dengan format:
 
 ```json
-{"recordedAt": 1700000000001, "quote": {"exchange": "bybit", "symbol": "BTC/USDT", "bid": 60000, "bidSize": 1.2, "ask": 60001, "askSize": 0.8, "exchangeTimestamp": 1700000000000, "matchingEngineTimestamp": 1699999999999, "receivedTimestamp": 1700000000000}}
+{"recordedAt": 1700000000001, "quote": {"exchange": "bybit", "symbol": "BTC/USDT", "bid": 60000, "bidSize": 1.2, "ask": 60001, "askSize": 0.8, "exchangeTimestamp": 1700000000000, "matchingEngineTimestamp": 1699999999999, "receivedTimestamp": 1700000000000, "receivedMonotonicMs": 12345.67}}
 ```
 
 Format `market-quotes.jsonl` lama tidak berubah. Write kedua recorder diserialisasi untuk menjaga urutan, dan shutdown menunggu seluruh write yang masih pending.
@@ -179,7 +201,9 @@ npm run replay:book -- \
   --min-net-spread 0.02 \
   --min-net-pnl 0.01 \
   --min-duration 50 \
-  --max-sync-diff 100
+  --max-receive-skew 100 \
+  --max-book-age 500 \
+  --max-source-skew 250
 ```
 
 Override tidak mengubah raw dataset dan tidak otomatis diturunkan untuk memaksa munculnya event.
@@ -198,7 +222,7 @@ Pilihan speed:
 
 Default speed adalah `max`. Default input `replay:book` adalah `data/orderbooks.jsonl`, sedangkan replay lama memakai `data/market-quotes.jsonl`. Scheduling memakai `recordedAt`, bukan exchange timestamp, agar arrival sequence lokal dapat direproduksi. Blank line dilewati; record malformed atau invalid diberi warning dan dilewati tanpa menghentikan seluruh replay.
 
-Live dan order book replay memanggil `MarketPipeline.processOrderBook()` yang sama untuk depth simulation, fees, lifecycle, event recording, dan metrics. Waktu logis replay menggunakan `recordedAt`, sehingga speed tidak mengubah fill, VWAP, slippage, fee, net result, atau state transition. UUID event boleh berbeda antar-run.
+Live dan order book replay memanggil `MarketPipeline.processOrderBook()` yang sama. Waktu logis replay menggunakan `recordedAt`, bukan `Date.now()`. Replay menginjeksi deterministic `HEALTHY` clock status dan tidak memakai clock health laptop saat replay, sehingga speed/NTP adjustment tidak mengubah decision. Replay processing duration tidak dicampur dengan live metrics dan bernilai `N/A`. UUID event boleh berbeda antar-run.
 
 Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Setiap run memakai output unik berbentuk `data/replays/<timestamp>-<short-id>/opportunity-events.jsonl`, sehingga hasil antar-run dan live event tidak tercampur. Path aktual dicetak pada akhir replay. Jika tidak ada event, file tersebut tidak perlu dibuat. Event yang masih terbuka dilaporkan jumlahnya dan tidak dipaksa menjadi `DISAPPEARED`.
 
@@ -215,6 +239,12 @@ Session metrics comparison depth mencakup:
 - Average BUY dan SELL slippage percent.
 - Total executable net-positive dan quality-qualified comparisons.
 - Total rejection serta breakdown `NOT_NET_POSITIVE`, small net spread, small net PnL, wide sync, insufficient depth, dan stale.
+- Observed ingress Bybit/OKX: average, P50, P95, P99, maksimum.
+- Receive skew: average, P50, P95, P99, maksimum.
+- Source timestamp skew: average, P95, P99.
+- Max book age: P50, P95, P99.
+- Live monotonic processing duration: average, P50, P95, P99, maksimum.
+- Count sync healthy serta receive/source skew high, book too old, clock unhealthy, dan timestamp anomaly.
 
 Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
@@ -280,6 +310,14 @@ npm start
 
 File JavaScript hasil build berada di folder `dist/`.
 
-## Scope Phase 2.2
+## Roadmap status
 
-Scope versi ini terbatas pada public multi-level order book, local reconstruction, hypothetical target-size execution, VWAP/slippage, estimated taker fees, quality filtering, duration-based lifecycle, replay, dan metrics. Belum ada real order execution, balance, transfer, private API, database, dashboard, atau paper trading.
+- Phase 1: complete.
+- Phase 2.0 fee-aware model: complete.
+- Phase 2.1 depth/slippage: complete.
+- Phase 2.2 opportunity quality: complete.
+- Phase 2.3 latency, clock health, dan synchronization: complete/current.
+
+## Scope Phase 2.3
+
+Scope versi ini terbatas pada timing diagnostics, clock-jump detection, explicit synchronization assessment, public multi-level order book, hypothetical execution, quality filtering, replay, dan metrics. Tidak ada ping/RTT palsu, timestamp compensation, real order execution, balance, transfer, private API, database, dashboard, atau paper trading.

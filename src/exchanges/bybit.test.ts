@@ -30,6 +30,7 @@ test('Bybit snapshot builds a sorted normalized book with correct top levels', (
       10,
     ),
     RECEIVED,
+    42.5,
   );
 
   assert.deepEqual(book?.bids, [
@@ -42,6 +43,7 @@ test('Bybit snapshot builds a sorted normalized book with correct top levels', (
   ]);
   assert.equal(book?.bids[0]?.price, 100);
   assert.equal(book?.asks[0]?.price, 101);
+  assert.equal(book?.receivedMonotonicMs, 42.5);
 });
 
 test('Bybit delta updates, inserts, and removes price levels', () => {

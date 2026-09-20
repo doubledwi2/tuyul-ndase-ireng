@@ -86,6 +86,7 @@ export function normalizedBookFromMaps(
   exchangeTimestamp: number | null,
   matchingEngineTimestamp: number | null,
   receivedTimestamp: number,
+  receivedMonotonicMs: number | null = null,
 ): NormalizedOrderBook | null {
   const orderBook: NormalizedOrderBook = {
     exchange,
@@ -95,6 +96,7 @@ export function normalizedBookFromMaps(
     exchangeTimestamp,
     matchingEngineTimestamp,
     receivedTimestamp,
+    receivedMonotonicMs,
   };
   return isValidNormalizedOrderBook(orderBook) ? orderBook : null;
 }

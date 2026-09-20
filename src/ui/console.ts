@@ -3,6 +3,7 @@ import {
   OPPORTUNITY_QUALITY_CONFIG,
   type OpportunityQualityConfig,
 } from '../config/opportunity.js';
+import { TIMING_CONFIG, type TimingConfig } from '../config/timing.js';
 import type {
   FeeAwareComparison,
   FeeAwareComparisons,
@@ -13,6 +14,7 @@ import type {
 } from '../scanner/depth-comparator.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
+import type { SyncAssessment } from '../timing/sync-model.js';
 import type { BestQuote } from '../types/market.js';
 
 function signed(value: number, fractionDigits: number): string {
@@ -113,8 +115,7 @@ function printQuality(
       passFail(qualification.netPnlOk),
   );
   console.log(
-    `Sync diff: actual ${comparison.receiveTimeDifferenceMs} ms; ` +
-      `required <= ${config.maxSyncDiffMsForQualified} ms — ` +
+    `Sync assessment: ${qualification.syncOk ? 'SYNC_HEALTHY' : 'UNHEALTHY'} — ` +
       passFail(qualification.syncOk),
   );
   console.log(`Depth: ${passFail(qualification.depthOk)}`);
@@ -164,8 +165,54 @@ export function printDepthComparisonSummary(
   comparisons: DepthComparisons,
   qualifications: readonly [OpportunityQualification, OpportunityQualification],
   qualityConfig: OpportunityQualityConfig = OPPORTUNITY_QUALITY_CONFIG,
+  syncAssessment?: SyncAssessment,
+  processingDurationMs: number | null = null,
+  timingConfig: TimingConfig = TIMING_CONFIG,
 ): void {
   console.log('\nBTC/USDT DEPTH SIMULATION\n');
+  if (syncAssessment !== undefined) {
+    console.log('TIMING');
+    console.log(`Receive skew: ${syncAssessment.receiveSkewMs} ms`);
+    console.log(
+      `Source timestamp skew: ${syncAssessment.sourceTimestampSkewMs ?? 'N/A'} ms`,
+    );
+    console.log(
+      `Book age: Bybit ${syncAssessment.bybitBookAgeMs} ms; ` +
+        `OKX ${syncAssessment.okxBookAgeMs} ms; ` +
+        `max ${syncAssessment.maxBookAgeMs} ms`,
+    );
+    console.log(
+      `Observed ingress: Bybit ${syncAssessment.bybitObservedIngressMs ?? 'N/A'} ms; ` +
+        `OKX ${syncAssessment.okxObservedIngressMs ?? 'N/A'} ms`,
+    );
+    console.log(`Processing duration: ${processingDurationMs ?? 'N/A'} ms`);
+    console.log(`Clock: ${syncAssessment.clockHealth.status}`);
+    console.log(`Sync: ${syncAssessment.status}`);
+    if (syncAssessment.reasons.length > 0) {
+      console.log('Reasons:');
+      for (const reason of syncAssessment.reasons) {
+        if (reason === 'RECEIVE_SKEW_HIGH') {
+          console.log(
+            `- receive skew ${syncAssessment.receiveSkewMs} ms > ` +
+              `${timingConfig.maxReceiveSkewMs} ms`,
+          );
+        } else if (reason === 'SOURCE_SKEW_HIGH') {
+          console.log(
+            `- source timestamp skew ${syncAssessment.sourceTimestampSkewMs} ms > ` +
+              `${timingConfig.maxSourceTimestampSkewMs} ms`,
+          );
+        } else if (reason === 'BOOK_TOO_OLD') {
+          console.log(
+            `- max book age ${syncAssessment.maxBookAgeMs} ms > ` +
+              `${timingConfig.maxBookAgeMs} ms`,
+          );
+        } else {
+          console.log(`- ${reason}`);
+        }
+      }
+    }
+    console.log('');
+  }
   printDepthDirection(comparisons[0], qualifications[0], qualityConfig);
   console.log('');
   printDepthDirection(comparisons[1], qualifications[1], qualityConfig);
@@ -205,6 +252,15 @@ export function printOpportunityEvent(event: OpportunityEvent): void {
   );
   console.log(`Tradable size: ${event.currentTradableSize} BTC`);
   console.log(`Sync diff: ${event.currentReceiveTimeDifferenceMs} ms`);
+  console.log(`Receive skew: ${event.currentReceiveSkewMs} ms`);
+  console.log(
+    `Source timestamp skew: ${event.currentSourceTimestampSkewMs ?? 'N/A'} ms`,
+  );
+  console.log(`Max book age: ${event.currentMaxBookAgeMs} ms`);
+  console.log(`Sync status: ${event.currentSyncStatus}`);
+  if (event.currentSyncReasons.length > 0) {
+    console.log(`Sync reasons: ${event.currentSyncReasons.join(', ')}`);
+  }
 
   if (event.state === 'DISAPPEARED') {
     console.log(`Lifetime: ${event.lifetimeMs ?? 0} ms`);
@@ -221,6 +277,7 @@ export function printOpportunityEvent(event: OpportunityEvent): void {
       `Peak estimated net PnL: ${signed(event.peakEstimatedNetPnlAbsolute, 4)} USDT`,
     );
     console.log(`Peak tradable size: ${event.peakTradableSize} BTC`);
+    console.log(`Peak receive skew: ${event.peakReceiveSkewMs} ms`);
   }
 }
 
@@ -252,6 +309,60 @@ export function printMetricsSummary(summary: OpportunityMetricsSummary): void {
   );
   console.log(
     `Average sell slippage: ${metric(summary.averageSellSlippagePercent, 4)}%`,
+  );
+  console.log('\n[TIMING]');
+  console.log(
+    `Receive skew avg/P50/P95/P99/max: ` +
+      `${metric(summary.averageReceiveSkewMs, 2)} / ` +
+      `${metric(summary.p50ReceiveSkewMs, 2)} / ` +
+      `${metric(summary.p95ReceiveSkewMs, 2)} / ` +
+      `${metric(summary.p99ReceiveSkewMs, 2)} / ` +
+      `${metric(summary.maxReceiveSkewMs, 2)} ms`,
+  );
+  console.log(
+    `Observed ingress Bybit avg/P50/P95/P99/max: ` +
+      `${metric(summary.bybitAverageObservedIngressMs, 2)} / ` +
+      `${metric(summary.bybitP50ObservedIngressMs, 2)} / ` +
+      `${metric(summary.bybitP95ObservedIngressMs, 2)} / ` +
+      `${metric(summary.bybitP99ObservedIngressMs, 2)} / ` +
+      `${metric(summary.bybitMaxObservedIngressMs, 2)} ms`,
+  );
+  console.log(
+    `Observed ingress OKX avg/P50/P95/P99/max: ` +
+      `${metric(summary.okxAverageObservedIngressMs, 2)} / ` +
+      `${metric(summary.okxP50ObservedIngressMs, 2)} / ` +
+      `${metric(summary.okxP95ObservedIngressMs, 2)} / ` +
+      `${metric(summary.okxP99ObservedIngressMs, 2)} / ` +
+      `${metric(summary.okxMaxObservedIngressMs, 2)} ms`,
+  );
+  console.log(
+    `Source timestamp skew avg/P95/P99: ` +
+      `${metric(summary.averageSourceTimestampSkewMs, 2)} / ` +
+      `${metric(summary.p95SourceTimestampSkewMs, 2)} / ` +
+      `${metric(summary.p99SourceTimestampSkewMs, 2)} ms`,
+  );
+  console.log(
+    `Max book age P50/P95/P99: ` +
+      `${metric(summary.p50MaxBookAgeMs, 2)} / ` +
+      `${metric(summary.p95MaxBookAgeMs, 2)} / ` +
+      `${metric(summary.p99MaxBookAgeMs, 2)} ms`,
+  );
+  console.log(
+    `Processing avg/P50/P95/P99/max: ` +
+      `${metric(summary.averageProcessingDurationMs, 4)} / ` +
+      `${metric(summary.p50ProcessingDurationMs, 4)} / ` +
+      `${metric(summary.p95ProcessingDurationMs, 4)} / ` +
+      `${metric(summary.p99ProcessingDurationMs, 4)} / ` +
+      `${metric(summary.maxProcessingDurationMs, 4)} ms`,
+  );
+  console.log(
+    `Sync healthy: ${summary.syncHealthyCount} / ${summary.timingAssessmentsTotal}`,
+  );
+  console.log(
+    `Sync failures receive/source/age/clock/anomaly: ` +
+      `${summary.receiveSkewHighCount} / ${summary.sourceSkewHighCount} / ` +
+      `${summary.bookTooOldCount} / ${summary.clockUnhealthyCount} / ` +
+      `${summary.timestampAnomalyCount}`,
   );
   console.log('');
   console.log(`Completed events: ${summary.totalCompletedEvents}`);

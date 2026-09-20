@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { performance } from 'node:perf_hooks';
 
 import type {
   NormalizedOrderBook,
@@ -28,6 +29,7 @@ export class BybitOrderBookState {
   applyMessage(
     payload: string,
     receivedTimestamp: number,
+    receivedMonotonicMs: number | null = null,
   ): NormalizedOrderBook | null {
     let message: unknown;
     try {
@@ -76,6 +78,7 @@ export class BybitOrderBookState {
       timestamp(message.ts),
       timestamp(message.cts),
       receivedTimestamp,
+      receivedMonotonicMs,
     );
   }
 }
@@ -122,7 +125,12 @@ export function connectBybit(onOrderBook: OrderBookHandler): OrderBookConnection
       });
       socket.on('message', (data) => {
         const receivedTimestamp = Date.now();
-        const orderBook = state.applyMessage(data.toString(), receivedTimestamp);
+        const receivedMonotonicMs = performance.now();
+        const orderBook = state.applyMessage(
+          data.toString(),
+          receivedTimestamp,
+          receivedMonotonicMs,
+        );
         if (orderBook !== null) {
           onOrderBook(orderBook);
         }

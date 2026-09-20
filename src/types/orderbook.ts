@@ -13,6 +13,7 @@ export interface NormalizedOrderBook {
   exchangeTimestamp: number | null;
   matchingEngineTimestamp: number | null;
   receivedTimestamp: number;
+  receivedMonotonicMs?: number | null;
 }
 
 function isValidLevel(level: OrderBookLevel): boolean {
@@ -54,6 +55,10 @@ export function isValidNormalizedOrderBook(
     orderBook.symbol === 'BTC/USDT' &&
     Number.isFinite(orderBook.receivedTimestamp) &&
     orderBook.receivedTimestamp > 0 &&
+    (orderBook.receivedMonotonicMs === undefined ||
+      orderBook.receivedMonotonicMs === null ||
+      (Number.isFinite(orderBook.receivedMonotonicMs) &&
+        orderBook.receivedMonotonicMs >= 0)) &&
     bestBid !== undefined &&
     bestAsk !== undefined &&
     orderBook.bids.every(isValidLevel) &&
@@ -85,6 +90,7 @@ export function deriveBestQuote(
     exchangeTimestamp: orderBook.exchangeTimestamp,
     matchingEngineTimestamp: orderBook.matchingEngineTimestamp,
     receivedTimestamp: orderBook.receivedTimestamp,
+    receivedMonotonicMs: orderBook.receivedMonotonicMs ?? null,
   };
 }
 

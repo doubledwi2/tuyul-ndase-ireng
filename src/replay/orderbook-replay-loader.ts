@@ -68,6 +68,15 @@ export function parseOrderBookRecord(value: unknown): OrderBookRecord | null {
   ) {
     return null;
   }
+  if (
+    raw.receivedMonotonicMs !== undefined &&
+    raw.receivedMonotonicMs !== null &&
+    (typeof raw.receivedMonotonicMs !== 'number' ||
+      !Number.isFinite(raw.receivedMonotonicMs) ||
+      raw.receivedMonotonicMs < 0)
+  ) {
+    return null;
+  }
   const orderBook: NormalizedOrderBook = {
     exchange: raw.exchange,
     symbol: raw.symbol,
@@ -76,6 +85,9 @@ export function parseOrderBookRecord(value: unknown): OrderBookRecord | null {
     exchangeTimestamp,
     matchingEngineTimestamp,
     receivedTimestamp: raw.receivedTimestamp,
+    ...(raw.receivedMonotonicMs !== undefined
+      ? { receivedMonotonicMs: raw.receivedMonotonicMs as number | null }
+      : {}),
   };
   return isValidNormalizedOrderBook(orderBook)
     ? { recordedAt: value.recordedAt, orderBook }

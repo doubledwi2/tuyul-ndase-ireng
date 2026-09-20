@@ -19,6 +19,7 @@ function book(exchange: 'bybit' | 'okx', timestamp: number): NormalizedOrderBook
     exchangeTimestamp: timestamp,
     matchingEngineTimestamp: exchange === 'bybit' ? timestamp - 1 : null,
     receivedTimestamp: timestamp,
+    receivedMonotonicMs: timestamp / 10,
   };
 }
 
@@ -41,4 +42,5 @@ test('order book recorder creates directories and preserves snapshot order', asy
   ]);
   assert.equal(records[0]?.orderBook.bids.length, 2);
   assert.equal(records[0]?.orderBook.asks.length, 2);
+  assert.equal(records[0]?.orderBook.receivedMonotonicMs, 100);
 });

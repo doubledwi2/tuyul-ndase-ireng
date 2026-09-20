@@ -8,6 +8,7 @@ export interface BestQuote {
   exchangeTimestamp: number | null;
   matchingEngineTimestamp: number | null;
   receivedTimestamp: number;
+  receivedMonotonicMs?: number | null;
 }
 
 export function isValidBestQuote(quote: BestQuote): boolean {
@@ -20,7 +21,11 @@ export function isValidBestQuote(quote: BestQuote): boolean {
     quote.ask > 0 &&
     Number.isFinite(quote.askSize) &&
     quote.askSize > 0 &&
-    quote.ask >= quote.bid
+    quote.ask >= quote.bid &&
+    (quote.receivedMonotonicMs === undefined ||
+      quote.receivedMonotonicMs === null ||
+      (Number.isFinite(quote.receivedMonotonicMs) &&
+        quote.receivedMonotonicMs >= 0))
   );
 }
 
