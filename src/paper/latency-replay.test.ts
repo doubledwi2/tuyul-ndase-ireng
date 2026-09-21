@@ -81,6 +81,7 @@ async function runFixture(fixture: FixtureExpectation) {
       executionConfig: {
         buyOrderLatencyMs: 50,
         sellOrderLatencyMs: 50,
+        unwindOrderLatencyMs: 50,
         orderTimeoutMs: 250,
         maxUnhedgedDurationMs: 200,
         allowPartialFill: true,

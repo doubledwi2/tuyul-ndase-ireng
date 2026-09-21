@@ -18,8 +18,6 @@ import {
   type NormalizedOrderBook,
 } from '../types/orderbook.js';
 import {
-  applyPaperBuy,
-  applyPaperSell,
   clonePaperBalances,
   consumeReservedPaperBuy,
   consumeReservedPaperSell,
@@ -336,7 +334,6 @@ export class LatencyPaperTradingEngine {
 
     for (const order of this.orders.values()) {
       if (
-        order.isUnwind ||
         terminal(order) ||
         order.exchange !== book.exchange ||
         logicalTimestamp < order.arrivalAt ||
@@ -344,7 +341,11 @@ export class LatencyPaperTradingEngine {
       ) {
         continue;
       }
-      this.attemptEntryFill(order, book, logicalTimestamp);
+      if (order.isUnwind) {
+        this.attemptUnwindFill(order, book, logicalTimestamp);
+      } else {
+        this.attemptEntryFill(order, book, logicalTimestamp);
+      }
     }
     this.expireOrders(logicalTimestamp);
     this.refreshAndMaybeUnwind(logicalTimestamp);
@@ -354,18 +355,29 @@ export class LatencyPaperTradingEngine {
     if (this.trades.every((trade) => trade.closedAt !== null)) {
       return;
     }
-    const pendingDeadlines = this.ordersArray()
+    const pendingEntryDeadlines = this.ordersArray()
       .filter((order) => !order.isUnwind && !terminal(order))
       .map((order) => order.deadlineAt);
-    const finalTimestamp = Math.max(
+    let finalTimestamp = Math.max(
       this.lastLogicalTimestamp,
-      pendingDeadlines.length === 0
+      pendingEntryDeadlines.length === 0
         ? this.lastLogicalTimestamp
-        : Math.max(...pendingDeadlines),
+        : Math.max(...pendingEntryDeadlines),
     );
     this.lastLogicalTimestamp = finalTimestamp;
     this.expireOrders(finalTimestamp);
     this.refreshAndMaybeUnwind(finalTimestamp);
+
+    const pendingUnwindDeadlines = this.ordersArray()
+      .filter((order) => order.isUnwind && !terminal(order))
+      .map((order) => order.deadlineAt);
+    if (pendingUnwindDeadlines.length > 0) {
+      finalTimestamp = Math.max(finalTimestamp, ...pendingUnwindDeadlines);
+      this.lastLogicalTimestamp = finalTimestamp;
+      this.expireOrders(finalTimestamp);
+      this.refreshAndMaybeUnwind(finalTimestamp);
+    }
+
     for (const trade of this.trades) {
       if (trade.closedAt !== null || trade.state === 'REJECTED') {
         continue;
@@ -448,6 +460,12 @@ export class LatencyPaperTradingEngine {
         order.firstFillAt === null ? null : order.firstFillAt - order.submittedAt,
       )
       .filter((value): value is number => value !== null);
+    const unwindLatencies = this.ordersArray()
+      .filter((order) => order.isUnwind)
+      .map((order) =>
+        order.firstFillAt === null ? null : order.firstFillAt - order.submittedAt,
+      )
+      .filter((value): value is number => value !== null);
     const finalized = this.trades.filter((trade) => trade.closedAt !== null);
     const unhedgedDurations = finalized
       .filter((trade) => this.everUnhedged.has(trade.id))
@@ -494,6 +512,10 @@ export class LatencyPaperTradingEngine {
       p50SellFillLatencyMs: percentile(sellLatencies, 50),
       p95SellFillLatencyMs: percentile(sellLatencies, 95),
       p99SellFillLatencyMs: percentile(sellLatencies, 99),
+      averageUnwindFillLatencyMs: average(unwindLatencies),
+      p50UnwindFillLatencyMs: percentile(unwindLatencies, 50),
+      p95UnwindFillLatencyMs: percentile(unwindLatencies, 95),
+      p99UnwindFillLatencyMs: percentile(unwindLatencies, 99),
       averageUnhedgedDurationMs: average(unhedgedDurations),
       p50UnhedgedDurationMs: percentile(unhedgedDurations, 50),
       p95UnhedgedDurationMs: percentile(unhedgedDurations, 95),
@@ -746,7 +768,7 @@ export class LatencyPaperTradingEngine {
 
   private expireOrders(timestamp: number): void {
     for (const order of this.orders.values()) {
-      if (order.isUnwind || terminal(order) || timestamp < order.deadlineAt) {
+      if (terminal(order) || timestamp < order.deadlineAt) {
         continue;
       }
       order.state = 'TIMED_OUT';
@@ -778,7 +800,14 @@ export class LatencyPaperTradingEngine {
       if (trade.closedAt !== null || trade.state === 'REJECTED') {
         continue;
       }
+      if (trade.unwindOrderId !== null) {
+        this.refreshTradeAfterUnwind(trade, timestamp);
+        continue;
+      }
       this.refreshTrade(trade, timestamp);
+      if (trade.closedAt !== null) {
+        continue;
+      }
       if (
         trade.unhedgedSince !== null &&
         timestamp - trade.unhedgedSince >= this.config.maxUnhedgedDurationMs
@@ -875,6 +904,9 @@ export class LatencyPaperTradingEngine {
   }
 
   private attemptUnwind(trade: LatencyPaperTrade, timestamp: number): void {
+    if (trade.unwindOrderId !== null) {
+      return;
+    }
     const exposure = trade.residualBaseExposure;
     if (Math.abs(exposure) <= PAPER_BALANCE_EPSILON) {
       return;
@@ -884,84 +916,128 @@ export class LatencyPaperTradingEngine {
     const side: PaperOrderSide = exposure > 0 ? 'SELL' : 'BUY';
     const exchange = exposure > 0 ? trade.buyExchange : trade.sellExchange;
     const requestedSize = Math.abs(exposure);
-    const cached = this.latestBooks.get(exchange);
+    let reservedQuote = 0;
+    let reservedBase = 0;
+    let insufficientFunds = false;
+
+    if (side === 'BUY') {
+      reservedQuote = this.balances[exchange].usdtAvailable;
+      insufficientFunds = reservedQuote <= PAPER_BALANCE_EPSILON;
+      if (!insufficientFunds) {
+        this.balances[exchange] = reservePaperUsdt(
+          this.balances[exchange],
+          reservedQuote,
+        );
+      }
+    } else {
+      insufficientFunds =
+        this.balances[exchange].btcAvailable + PAPER_BALANCE_EPSILON <
+        requestedSize;
+      if (!insufficientFunds) {
+        reservedBase = requestedSize;
+        this.balances[exchange] = reservePaperBtc(
+          this.balances[exchange],
+          reservedBase,
+        );
+      }
+    }
+
     const order = this.createOrder(
       trade,
       exchange,
       side,
       requestedSize,
       timestamp,
-      timestamp,
-      0,
-      0,
+      timestamp + this.config.unwindOrderLatencyMs,
+      reservedQuote,
+      reservedBase,
       true,
     );
     trade.unwindOrderId = order.id;
     this.orders.set(order.id, order);
     this.emitOrder(order, timestamp);
-    if (cached === undefined) {
+    this.emitTrade(trade, timestamp);
+    if (insufficientFunds) {
       order.state = 'CANCELLED';
       order.completedAt = timestamp;
       this.emitOrder(order, timestamp);
       this.closeTrade(trade, 'UNWIND_FAILED', 'FAILED', timestamp);
+    }
+  }
+
+  private attemptUnwindFill(
+    order: InternalOrder,
+    book: NormalizedOrderBook,
+    timestamp: number,
+  ): void {
+    const feeRate = this.fees[order.exchange].takerRate;
+    let result: FillResult | null = null;
+    if (order.side === 'BUY') {
+      result = fillWithinBudget(
+        book,
+        order.remainingSize,
+        order.reservedQuoteRemaining,
+        feeRate,
+      );
+    } else {
+      const simulation = simulateExecution(book, order.side, order.remainingSize);
+      if (
+        simulation.filledSize > PAPER_BALANCE_EPSILON &&
+        simulation.averageExecutionPrice !== null
+      ) {
+        result = {
+          size: simulation.filledSize,
+          notional: simulation.notional,
+          averagePrice: simulation.averageExecutionPrice,
+        };
+      }
+    }
+    if (result === null || result.size <= PAPER_BALANCE_EPSILON) {
       return;
     }
 
-    const feeRate = this.fees[exchange].takerRate;
-    const simulation = simulateExecution(cached.book, side, requestedSize);
-    let result: FillResult | null = null;
-    if (side === 'BUY') {
-      result = fillWithinBudget(
-        cached.book,
-        requestedSize,
-        this.balances[exchange].usdtAvailable,
-        feeRate,
+    const fee = result.notional * feeRate;
+    if (order.side === 'BUY') {
+      this.balances[order.exchange] = consumeReservedPaperBuy(
+        this.balances[order.exchange],
+        result.notional,
+        fee,
+        result.size,
       );
-    } else if (
-      simulation.filledSize > PAPER_BALANCE_EPSILON &&
-      simulation.averageExecutionPrice !== null
-    ) {
-      result = {
-        size: Math.min(
-          simulation.filledSize,
-          this.balances[exchange].btcAvailable,
-        ),
-        notional: 0,
-        averagePrice: simulation.averageExecutionPrice,
-      };
-      result.notional = result.size * result.averagePrice;
-    }
-    if (result !== null && result.size > PAPER_BALANCE_EPSILON) {
-      const fee = result.notional * feeRate;
-      this.balances[exchange] =
-        side === 'BUY'
-          ? applyPaperBuy(
-              this.balances[exchange],
-              result.notional,
-              fee,
-              result.size,
-            )
-          : applyPaperSell(
-              this.balances[exchange],
-              result.notional,
-              fee,
-              result.size,
-            );
-      this.recordFill(order, result, fee, timestamp);
-      order.state =
-        order.remainingSize <= PAPER_BALANCE_EPSILON
-          ? 'FILLED'
-          : 'PARTIALLY_FILLED';
-      order.completedAt = timestamp;
-      trade.unwindCashFlow +=
-        side === 'SELL' ? result.notional : -result.notional;
-      trade.unwindFees += fee;
-      this.emitOrder(order, timestamp);
+      order.reservedQuoteRemaining = Math.max(
+        0,
+        order.reservedQuoteRemaining - result.notional - fee,
+      );
     } else {
-      order.state = 'CANCELLED';
-      order.completedAt = timestamp;
-      this.emitOrder(order, timestamp);
+      this.balances[order.exchange] = consumeReservedPaperSell(
+        this.balances[order.exchange],
+        result.notional,
+        fee,
+        result.size,
+      );
+      order.reservedBaseRemaining = Math.max(
+        0,
+        order.reservedBaseRemaining - result.size,
+      );
     }
+
+    this.recordFill(order, result, fee, timestamp);
+    const trade = this.trades.find((candidate) => candidate.id === order.tradeId);
+    if (trade === undefined) {
+      throw new Error(`Missing paper trade ${order.tradeId}.`);
+    }
+    trade.unwindCashFlow +=
+      order.side === 'SELL' ? result.notional : -result.notional;
+    trade.unwindFees += fee;
+    if (order.remainingSize <= PAPER_BALANCE_EPSILON) {
+      order.remainingSize = 0;
+      order.state = 'FILLED';
+      order.completedAt = timestamp;
+      this.releaseOrderReservation(order);
+    } else {
+      order.state = 'PARTIALLY_FILLED';
+    }
+    this.emitOrder(order, timestamp);
     this.refreshTradeAfterUnwind(trade, timestamp);
   }
 
@@ -985,8 +1061,14 @@ export class LatencyPaperTradingEngine {
     if (Math.abs(trade.residualBaseExposure) <= PAPER_BALANCE_EPSILON) {
       trade.residualBaseExposure = 0;
       this.closeTrade(trade, 'UNWOUND', 'CLOSED', timestamp);
-    } else {
+    } else if (
+      trade.unwindOrderId !== null &&
+      terminal(this.requireOrder(trade.unwindOrderId))
+    ) {
       this.closeTrade(trade, 'UNWIND_FAILED', 'FAILED', timestamp);
+    } else {
+      trade.state = 'UNWINDING';
+      this.emitTrade(trade, timestamp);
     }
   }
 

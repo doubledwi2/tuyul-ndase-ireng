@@ -156,6 +156,18 @@ function trigger(
   });
 }
 
+function triggerBuyExcessUnwind(
+  paperEngine: LatencyPaperTradingEngine,
+): void {
+  trigger(paperEngine);
+  paperEngine.processOrderBook(book('bybit', 1_050, 99, 100), 1_050);
+  paperEngine.processOrderBook(book('okx', 1_050, 103, 104, 0.006, 1), 1_050);
+  paperEngine.processOrderBook(
+    book('okx', 1_250, 103, 104, 1e-13, 1),
+    1_250,
+  );
+}
+
 test('trigger reserves BUY USDT and SELL BTC without filling at decision time', () => {
   const paperEngine = engine();
   const trade = trigger(paperEngine);
@@ -280,12 +292,25 @@ test('partial mismatch is explicit when unwind threshold has not elapsed', () =>
   assert.ok(Math.abs((trade?.residualBaseExposure ?? 0) - 0.002) < 1e-12);
 });
 
-test('unhedged BUY excess is unwound on current book with fee and zero residual', () => {
+test('stale cached book and pre-arrival updates cannot fill an unwind order', () => {
   const paperEngine = engine();
-  trigger(paperEngine);
-  paperEngine.processOrderBook(book('bybit', 1_050, 99, 100), 1_050);
-  paperEngine.processOrderBook(book('okx', 1_050, 103, 104, 0.006, 1), 1_050);
-  paperEngine.processOrderBook(book('bybit', 1_250, 98, 99), 1_250);
+  triggerBuyExcessUnwind(paperEngine);
+
+  const unwindOrder = paperEngine.getOrders().find((order) => order.isUnwind);
+  assert.equal(paperEngine.getFills().filter((fill) => fill.isUnwind).length, 0);
+  assert.equal(paperEngine.getTrades()[0]?.state, 'UNWINDING');
+  assert.equal(unwindOrder?.submittedAt, 1_250);
+  assert.equal(unwindOrder?.arrivalAt, 1_300);
+
+  paperEngine.processOrderBook(book('bybit', 1_299, 79, 80), 1_299);
+  assert.equal(paperEngine.getFills().filter((fill) => fill.isUnwind).length, 0);
+  assert.equal(paperEngine.getTrades()[0]?.state, 'UNWINDING');
+});
+
+test('first eligible fresh venue book fills unwind at its observed price', () => {
+  const paperEngine = engine();
+  triggerBuyExcessUnwind(paperEngine);
+  paperEngine.processOrderBook(book('bybit', 1_300, 96, 97), 1_300);
 
   const trade = paperEngine.getTrades()[0];
   const unwindFill = paperEngine.getFills().find((fill) => fill.isUnwind);
@@ -293,20 +318,60 @@ test('unhedged BUY excess is unwound on current book with fee and zero residual'
   assert.equal(trade?.state, 'CLOSED');
   assert.equal(trade?.residualBaseExposure, 0);
   assert.equal(unwindFill?.side, 'SELL');
+  assert.equal(unwindFill?.timestamp, 1_300);
+  assert.equal(unwindFill?.averagePrice, 96);
   assert.ok((unwindFill?.fee ?? 0) > 0);
+  assert.equal(paperEngine.getMetrics().averageUnwindFillLatencyMs, 50);
 });
 
-test('insufficient unwind depth leaves residual exposure and fails trade', () => {
+test('finish creates no synthetic unwind fill from cached market data', () => {
   const paperEngine = engine();
-  trigger(paperEngine);
-  paperEngine.processOrderBook(book('bybit', 1_050, 99, 100), 1_050);
-  paperEngine.processOrderBook(book('okx', 1_050, 103, 104, 0.006, 1), 1_050);
-  paperEngine.processOrderBook(book('bybit', 1_250, 98, 99, 0.001, 1), 1_250);
+  triggerBuyExcessUnwind(paperEngine);
+  paperEngine.finish();
 
   const trade = paperEngine.getTrades()[0];
+  const unwindOrder = paperEngine.getOrders().find((order) => order.isUnwind);
+  assert.equal(paperEngine.getFills().filter((fill) => fill.isUnwind).length, 0);
+  assert.equal(trade?.outcome, 'UNWIND_FAILED');
+  assert.equal(trade?.state, 'FAILED');
+  assert.ok(Math.abs((trade?.residualBaseExposure ?? 0) - 0.004) < 1e-12);
+  assert.equal(unwindOrder?.state, 'TIMED_OUT');
+  assert.equal(paperEngine.getBalances().bybit.btcReserved, 0);
+  assert.ok(paperEngine.getBalances().bybit.btcAvailable >= 0);
+  assert.equal(paperEngine.getMetrics().unwindFailures, 1);
+});
+
+test('successive fresh updates can fully fill a partial unwind', () => {
+  const paperEngine = engine();
+  triggerBuyExcessUnwind(paperEngine);
+  paperEngine.processOrderBook(book('bybit', 1_300, 97, 98, 0.001), 1_300);
+
+  let trade = paperEngine.getTrades()[0];
+  assert.equal(trade?.state, 'UNWINDING');
+  assert.ok(Math.abs((trade?.residualBaseExposure ?? 0) - 0.003) < 1e-12);
+
+  paperEngine.processOrderBook(book('bybit', 1_310, 96, 97, 0.003), 1_310);
+  trade = paperEngine.getTrades()[0];
+  assert.equal(trade?.outcome, 'UNWOUND');
+  assert.equal(trade?.residualBaseExposure, 0);
+  assert.equal(paperEngine.getFills().filter((fill) => fill.isUnwind).length, 2);
+  assert.equal(paperEngine.getMetrics().unwindSuccess, 1);
+});
+
+test('partial unwind times out with real residual and released reservation', () => {
+  const paperEngine = engine();
+  triggerBuyExcessUnwind(paperEngine);
+  paperEngine.processOrderBook(book('bybit', 1_300, 97, 98, 0.001), 1_300);
+  paperEngine.processOrderBook(book('okx', 1_500, 103, 104), 1_500);
+
+  const trade = paperEngine.getTrades()[0];
+  const unwindOrder = paperEngine.getOrders().find((order) => order.isUnwind);
   assert.equal(trade?.outcome, 'UNWIND_FAILED');
   assert.equal(trade?.state, 'FAILED');
   assert.ok(Math.abs((trade?.residualBaseExposure ?? 0) - 0.003) < 1e-12);
+  assert.equal(unwindOrder?.state, 'TIMED_OUT');
+  assert.equal(paperEngine.getBalances().bybit.btcReserved, 0);
+  assert.ok(paperEngine.getBalances().bybit.btcAvailable >= 0);
   assert.equal(paperEngine.getMetrics().unwindFailures, 1);
 });
 
@@ -315,7 +380,11 @@ test('SELL excess uses a BUY unwind on the sell venue', () => {
   trigger(paperEngine);
   paperEngine.processOrderBook(book('bybit', 1_050, 99, 100, 1, 0.001), 1_050);
   paperEngine.processOrderBook(book('okx', 1_050, 103, 104), 1_050);
-  paperEngine.processOrderBook(book('okx', 1_250, 103, 104), 1_250);
+  paperEngine.processOrderBook(
+    book('bybit', 1_250, 99, 100, 1, 1e-13),
+    1_250,
+  );
+  paperEngine.processOrderBook(book('okx', 1_300, 103, 104), 1_300);
 
   const trade = paperEngine.getTrades()[0];
   const unwindFill = paperEngine.getFills().find((fill) => fill.isUnwind);
@@ -323,4 +392,6 @@ test('SELL excess uses a BUY unwind on the sell venue', () => {
   assert.equal(trade?.residualBaseExposure, 0);
   assert.equal(unwindFill?.exchange, 'okx');
   assert.equal(unwindFill?.side, 'BUY');
+  assert.equal(paperEngine.getBalances().okx.usdtReserved, 0);
+  assert.ok(paperEngine.getBalances().okx.usdtAvailable >= 0);
 });

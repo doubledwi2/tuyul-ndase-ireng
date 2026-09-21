@@ -152,6 +152,10 @@ export interface PaperExecutionMetrics {
   p50SellFillLatencyMs: number | null;
   p95SellFillLatencyMs: number | null;
   p99SellFillLatencyMs: number | null;
+  averageUnwindFillLatencyMs: number | null;
+  p50UnwindFillLatencyMs: number | null;
+  p95UnwindFillLatencyMs: number | null;
+  p99UnwindFillLatencyMs: number | null;
   averageUnhedgedDurationMs: number | null;
   p50UnhedgedDurationMs: number | null;
   p95UnhedgedDurationMs: number | null;

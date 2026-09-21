@@ -201,6 +201,7 @@ Baseline deterministik di `src/config/paper.ts`:
 ```text
 PAPER_BUY_ORDER_LATENCY_MS = 50
 PAPER_SELL_ORDER_LATENCY_MS = 50
+PAPER_UNWIND_ORDER_LATENCY_MS = 50
 PAPER_ORDER_TIMEOUT_MS = 250
 PAPER_MAX_UNHEDGED_DURATION_MS = 200
 PAPER_ALLOW_PARTIAL_FILL = true
@@ -216,7 +217,9 @@ Sebelum submission, BUY me-reserve estimasi USDT berdasarkan current best ask pl
 
 Perbedaan `buyFilledSize - sellFilledSize` menjadi residual BTC exposure. Trade dapat berada pada `SUBMITTING`, `PARTIALLY_FILLED`, `ONE_LEG_FILLED`, `UNHEDGED`, `UNWINDING`, `FILLED`, `CLOSED`, `FAILED`, atau `REJECTED`. Outcome final dibedakan menjadi `CLEAN_FILL`, `PARTIAL_BOTH`, `BUY_ONLY`, `SELL_ONLY`, `UNWOUND`, `UNWIND_FAILED`, `TIMEOUT_NO_FILL`, dan `REJECTED_PRETRADE`.
 
-Jika mismatch bertahan selama 200 ms, entry order yang masih terbuka dibatalkan dan engine mencoba emergency unwind virtual pada venue yang memegang excess inventory, memakai latest book yang sudah terlihat. Unwind terkena depth, slippage, dan taker fee. Unwind yang tidak dapat menutup seluruh residual menghasilkan `FAILED`/`UNWIND_FAILED`; residual tidak dipalsukan menjadi nol.
+Jika mismatch bertahan selama 200 ms, entry order yang masih terbuka dibatalkan dan engine membuat emergency unwind order virtual pada venue yang memegang excess inventory. Unwind mempunyai latency deterministik 50 ms dan memakai timeout order 250 ms yang sama dengan entry. Order ini tidak pernah fill dari historical cached snapshot: engine menunggu normalized-book update venue yang benar dengan waktu logis pada atau setelah `arrivalAt` dan tidak melewati deadline. Unwind dapat terisi sebagian pada successive eligible update, dengan depth, slippage, taker fee, dan reservation balance yang aktual.
+
+Saat replay mencapai EOF, `finish()` hanya mengekspirasi order dan melepaskan reservation; ia tidak membuat synthetic market fill dari cache lama. Jika fresh venue update, funds, atau depth tidak cukup sampai deadline, hasilnya `FAILED`/`UNWIND_FAILED` dan residual exposure tetap nyata pada virtual inventory.
 
 Accounting melaporkan matched `paperEntryPnl`, signed unwind cash flow, unwind fee/cost, dan final paper realized PnL secara terpisah dari portfolio MTM. BUY-only, SELL-only, atau residual yang belum tertutup tidak diakui sebagai PnL hanya karena menghasilkan cash flow satu sisi; exposure sisanya terlihat pada inventory dan portfolio MTM. Istilah realized tetap berarti realized di ledger virtual—bukan profit uang nyata.
 
@@ -311,7 +314,7 @@ Dataset order book dapat dijalankan melalui pipeline dan paper engine yang sama 
 npm run replay:paper -- --file data/orderbooks.jsonl --speed max
 ```
 
-Replay memakai `recordedAt` sebagai waktu logis dan state machine yang sama dengan live paper mode, tanpa `sleep` di business logic. Config dan urutan input yang sama menghasilkan order state, fill, balance, residual exposure, unwind, paper PnL, dan portfolio value yang sama; UUID lifecycle boleh berbeda. Seluruh transition disimpan terpisah per run di `data/replays/paper-<run-id>/paper-events.jsonl`, sedangkan input tidak ditulis ulang. Jika tidak ada event paper, writer tetap kosong dan file output tidak perlu dibuat.
+Replay memakai `recordedAt` sebagai waktu logis dan state machine yang sama dengan live paper mode, tanpa `sleep` di business logic. Config dan urutan input yang sama menghasilkan order state, fill, balance, residual exposure, unwind, paper PnL, dan portfolio value yang sama; UUID lifecycle boleh berbeda. Entry maupun unwind hanya dapat memakai record order book eligible yang benar-benar ada di input—EOF tidak memalsukan fill. Seluruh transition disimpan terpisah per run di `data/replays/paper-<run-id>/paper-events.jsonl`, sedangkan input tidak ditulis ulang. Jika tidak ada event paper, writer tetap kosong dan file output tidak perlu dibuat.
 
 Fixture Phase 3.0 tetap tersedia di `fixtures/paper-qualified-orderbooks.jsonl`. Fixture kecil Phase 3.1 berada di `fixtures/paper-3.1/`: clean fill, BUY-only, SELL-only, partial mismatch, timeout tanpa fill, unwind sukses, dan unwind gagal. Dataset aktual boleh menghasilkan nol paper trade jika tidak memiliki event `QUALIFIED`; itu hasil valid dan threshold tidak diturunkan otomatis.
 
@@ -415,8 +418,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 2.3.1 clock-offset baseline correction: complete.
 - Phase 2.3.2 final timing guard: complete.
 - Phase 3.0 idealized atomic paper engine: complete/compatibility.
-- Phase 3.1 execution latency, partial fill, dan leg-risk simulation: complete/current.
+- Phase 3.1 execution latency, partial fill, dan leg-risk simulation: complete.
+- Phase 3.1.1 fresh-book unwind guard: complete/current.
 
-## Scope Phase 3.1
+## Scope Phase 3.1.1
 
-Scope versi ini menambahkan deterministic order-arrival latency, reservation, successive partial fills, timeout, residual exposure, emergency paper unwind, execution metrics, append-only execution event log, dan no-lookahead replay. Tidak ada real order execution, transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.
+Scope versi ini mempertahankan deterministic order-arrival latency, reservation, successive partial fills, timeout, residual exposure, execution metrics, append-only execution event log, dan no-lookahead replay. Corrective guard memastikan emergency paper unwind hanya memakai fresh eligible venue update dan EOF tidak menciptakan synthetic fill. Tidak ada real order execution, transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.

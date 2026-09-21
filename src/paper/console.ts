@@ -114,6 +114,9 @@ export function printPaperExecutionMetrics(
     `SELL fill latency avg/P50/P95/P99: ${distribution(metrics.averageSellFillLatencyMs, metrics.p50SellFillLatencyMs, metrics.p95SellFillLatencyMs, metrics.p99SellFillLatencyMs)}`,
   );
   console.log(
+    `Unwind fill latency avg/P50/P95/P99: ${distribution(metrics.averageUnwindFillLatencyMs, metrics.p50UnwindFillLatencyMs, metrics.p95UnwindFillLatencyMs, metrics.p99UnwindFillLatencyMs)}`,
+  );
+  console.log(
     `Unhedged duration avg/P50/P95/P99: ${distribution(metrics.averageUnhedgedDurationMs, metrics.p50UnhedgedDurationMs, metrics.p95UnhedgedDurationMs, metrics.p99UnhedgedDurationMs)}`,
   );
   console.log(
