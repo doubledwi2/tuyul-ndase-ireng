@@ -1,8 +1,8 @@
 # tuyul-ndase-ireng
 
-Final Timing Guard v0.2.5 adalah corrective hardening Phase 2.3.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, mensimulasikan hypothetical taker execution, lalu menilai economics, timing health, dan kualitas candidate secara terpisah.
+Paper Trading Engine v0.3.0 adalah Phase 3.0 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu dapat menjalankan accounting virtual untuk opportunity yang sudah `QUALIFIED`.
 
-Aplikasi ini tidak memakai API key atau autentikasi dan tidak melakukan trading maupun order execution. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill. Persistence hanya berupa file JSONL lokal; tidak ada database.
+Aplikasi ini tidak memakai API key, autentikasi, private endpoint, atau real order. Paper trading hanya mengubah saldo virtual in-memory dan menulis hasilnya ke file JSONL lokal; tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
 
 ## Data source
 
@@ -153,6 +153,47 @@ Data stale tidak membuat event baru. Jika event hidup menjadi stale, state berub
 
 Event menyimpan `qualifiedAt`, `timeToQualifiedMs`, `everQualified`, `currentQualificationReasons`, current receive/source skew, max book age, sync status/reasons, dan peak receive skew. Sync unhealthy bersifat `INVALID_SYNC`, bukan economic disappearance. Recovery me-reset validation duration window.
 
+## Paper trading
+
+Paper mode diaktifkan secara eksplisit dan tidak berjalan pada `npm run dev`:
+
+```bash
+npm run paper
+```
+
+Mode ini tetap hanya membuka public WebSocket Bybit dan OKX. Tidak ada jalur kode untuk credential, private endpoint, atau pengiriman order. Saldo awal virtual di `src/config/paper.ts` adalah baseline engineering, bukan rekomendasi modal:
+
+| Exchange | BTC | USDT |
+|---|---:|---:|
+| Bybit | 0.10 | 10,000 |
+| OKX | 0.10 | 10,000 |
+
+`MarketPipeline` menerbitkan event, `PaperTradingCoordinator` hanya meneruskan state `QUALIFIED`, dan `PaperTradingEngine` mensimulasikan ulang kedua leg dari latest normalized order book dengan `simulateExecution()`. Trigger ditolak jika umur event melebihi baseline `MAX_PAPER_TRIGGER_AGE_MS = 100`, sync terbaru tidak `SYNC_HEALTHY`, depth tidak dapat memenuhi target, result terbaru tidak net-positive/qualified, saldo venue tidak cukup, atau event ID sudah pernah diproses.
+
+Rejection reason bertipe tetap: `NOT_QUALIFIED`, `SYNC_UNHEALTHY`, `INSUFFICIENT_DEPTH`, `INSUFFICIENT_BUY_USDT`, `INSUFFICIENT_SELL_BTC`, `NET_NOT_POSITIVE`, `STALE_OPPORTUNITY`, dan `DUPLICATE_EVENT`.
+
+Kedua venue harus sudah memiliki inventory. Contoh BUY Bybit / SELL OKX mengurangi USDT dan menambah BTC virtual di Bybit, sementara BTC berkurang dan USDT bertambah di OKX. Tidak ada transfer antar-exchange. Fee dibebankan pada kedua leg menggunakan config taker fee Phase 2.
+
+Phase 3.0 memakai idealized atomic fill: kedua leg hanya di-commit bersama jika keduanya fully filled dan seluruh check lolos. Jika satu leg atau balance check gagal, tidak ada saldo yang berubah. Model ini belum memasukkan exchange API latency, acknowledgement delay, partial fill, leg mismatch, cancel/retry, atau network failure; snapshot dianggap tersedia pada decision time. Batasan tersebut tetap untuk fase berikutnya, bukan disimulasikan diam-diam di versi ini.
+
+Trade net PnL dihitung dari cash flow kedua leg:
+
+```text
+netTradePnl = sellNotional - sellFee - buyNotional - buyFee
+```
+
+Nilai itu dipisahkan dari portfolio mark-to-market. Reference BTC price adalah rata-rata mid-price latest Bybit dan OKX:
+
+```text
+referenceBtcPrice = (bybitMid + okxMid) / 2
+portfolioValueUsdt = totalUSDT + totalBTC * referenceBtcPrice
+paperPortfolioPnlUsdt = currentPortfolioValueUsdt - initialPortfolioValueUsdt
+```
+
+Summary menampilkan trade attempted/filled/rejected, gross PnL, fee, net trade PnL, total inventory, portfolio value/MTM PnL, dan saldo BTC/USDT per exchange. Floating-point residual yang sangat dekat nol di-clamp dengan epsilon agar saldo virtual tidak menjadi negatif karena noise representasi.
+
+Paper trade live ditulis append-only per run ke `data/paper/live-<run-id>/trades.jsonl`. Record berisi `recordedAt` dan snapshot `PaperTrade`, terpisah dari raw market data dan opportunity event.
+
 ## Raw market recording
 
 Dalam live mode, setiap normalized top-50 order book state yang benar-benar dipakai pipeline disimpan append-only ke:
@@ -236,6 +277,18 @@ Replay tidak menghubungi Bybit/OKX dan tidak menulis kembali ke raw dataset. Set
 
 Raw order book dan quote input tidak pernah ditulis ulang saat replay. Fee, target size, dan economics dihitung downstream, sehingga dataset order book yang sama dapat diuji ulang dengan config berbeda. Replay quote lama tetap top-of-book-only; gunakan `replay:book` untuk hasil Phase 2.1.
 
+### Paper replay
+
+Dataset order book dapat dijalankan melalui pipeline dan paper engine yang sama tanpa WebSocket:
+
+```bash
+npm run replay:paper -- --file data/orderbooks.jsonl --speed max
+```
+
+Replay memakai `recordedAt` sebagai waktu logis. Config dan urutan input yang sama menghasilkan filled/rejected count, final balance, fee, net trade PnL, dan portfolio value yang sama; UUID lifecycle boleh berbeda. Hasil paper trade disimpan terpisah per run di `data/replays/paper-<run-id>/paper-trades.jsonl`, sedangkan input tidak ditulis ulang. Jika tidak ada attempt, writer tetap kosong dan file output tidak perlu dibuat.
+
+Fixture `fixtures/paper-qualified-orderbooks.jsonl` menyediakan synthetic opportunity yang diketahui dapat menjadi `QUALIFIED` dengan config test. Dataset aktual boleh menghasilkan nol paper trade jika tidak memiliki event `QUALIFIED`; itu hasil valid dan threshold tidak diturunkan otomatis.
+
 ## Opportunity metrics
 
 Session metrics comparison depth mencakup:
@@ -299,6 +352,12 @@ Pada live mode:
 - Raw normalized quote: `data/market-quotes.jsonl`
 - Opportunity state changes: `data/opportunity-events.jsonl`
 
+Untuk live paper mode dan saldo virtual:
+
+```bash
+npm run paper
+```
+
 ## Typecheck dan build
 
 ```bash
@@ -328,8 +387,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 2.2 opportunity quality: complete.
 - Phase 2.3 latency, clock health, dan synchronization: complete.
 - Phase 2.3.1 clock-offset baseline correction: complete.
-- Phase 2.3.2 final timing guard: complete/current.
+- Phase 2.3.2 final timing guard: complete.
+- Phase 3.0 paper trading engine: complete/current.
 
-## Scope Phase 2.3.2
+## Scope Phase 3.0
 
-Scope versi ini terbatas pada timing diagnostics, clock-jump detection, explicit synchronization assessment, public multi-level order book, hypothetical execution, quality filtering, replay, dan metrics. Tidak ada ping/RTT palsu, timestamp compensation, real order execution, balance, transfer, private API, database, dashboard, atau paper trading.
+Scope versi ini menambahkan virtual balance, idealized atomic paper execution, inventory metrics, paper trade JSONL, dan deterministic paper replay di atas pipeline Phase 2. Tidak ada real order execution, partial fill/leg-risk simulation, order latency, retry, transfer, private API, API key, database production, atau dashboard.
