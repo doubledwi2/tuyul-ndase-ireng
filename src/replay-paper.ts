@@ -3,6 +3,7 @@ import type { ReplaySpeed } from './replay/replay-engine.js';
 import {
   printLatencyPaperTrade,
   printPaperExecutionMetrics,
+  printPaperRiskSummary,
   printPaperSummary,
 } from './paper/console.js';
 import {
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   }
   printPaperSummary(result.summary);
   printPaperExecutionMetrics(result.metrics);
+  printPaperRiskSummary(result.riskSummary);
   console.log(`\n[PAPER REPLAY] Processed records: ${result.processedRecords}`);
 }
 

@@ -4,6 +4,7 @@ import type {
   PaperSessionSummary,
   PaperTrade,
 } from './types.js';
+import type { PaperRiskSummary } from '../risk/paper-risk-manager.js';
 
 function amount(value: number | null, digits = 4): string {
   return value === null ? 'N/A' : value.toFixed(digits);
@@ -81,6 +82,9 @@ export function printLatencyPaperTrade(trade: LatencyPaperTrade): void {
   if (trade.rejectionReason !== null) {
     console.log(`Rejection: ${trade.rejectionReason}`);
   }
+  if ((trade.riskReasons?.length ?? 0) > 0) {
+    console.log(`Risk reasons: ${trade.riskReasons?.join(', ')}`);
+  }
 }
 
 function distribution(
@@ -126,5 +130,59 @@ export function printPaperExecutionMetrics(
   console.log(`Paper unwind cost: ${metrics.paperUnwindCost.toFixed(4)} USDT`);
   console.log(
     `Paper final trade PnL: ${metrics.paperFinalTradePnl.toFixed(4)} USDT`,
+  );
+}
+
+export function printPaperRiskSummary(summary: PaperRiskSummary): void {
+  console.log('\n[RISK]');
+  console.log(`State: ${summary.state}`);
+  console.log(
+    `Halt reasons: ${summary.haltReasons.length === 0 ? 'NONE' : summary.haltReasons.join(', ')}`,
+  );
+  console.log(`Open trades: ${summary.openTrades}`);
+  console.log(`Global residual BTC: ${summary.globalResidualBtc.toFixed(8)}`);
+  console.log(`Consecutive failures: ${summary.consecutiveFailures}`);
+  console.log(
+    `Session realized PnL: ${summary.sessionRealizedPnlUsdt.toFixed(4)} USDT`,
+  );
+
+  for (const exchange of ['bybit', 'okx'] as const) {
+    const venue = summary.venues[exchange];
+    console.log(`\n${exchange.toUpperCase()} inventory`);
+    console.log(
+      `BTC available/reserved/share: ${venue.btcAvailable.toFixed(8)} / ${venue.btcReserved.toFixed(8)} / ${venue.btcPercentage.toFixed(2)}%`,
+    );
+    console.log(
+      `USDT available/reserved/share: ${venue.usdtAvailable.toFixed(4)} / ${venue.usdtReserved.toFixed(4)} / ${venue.usdtPercentage.toFixed(2)}%`,
+    );
+  }
+
+  console.log('\nRebalance suggestions:');
+  if (summary.rebalanceSuggestions.length === 0) {
+    console.log('None');
+  } else {
+    for (const suggestion of summary.rebalanceSuggestions) {
+      console.log(
+        `- ${suggestion.asset} ${suggestion.amount.toFixed(8)} ${suggestion.fromExchange.toUpperCase()} -> ${suggestion.toExchange.toUpperCase()}: ${suggestion.reason}`,
+      );
+    }
+  }
+
+  const metrics = summary.metrics;
+  console.log('\nRisk checks:');
+  console.log(
+    `Checks/allowed/rejected: ${metrics.riskChecks} / ${metrics.riskAllowed} / ${metrics.riskRejected}`,
+  );
+  console.log(
+    `Rejected total BTC/BTC reserve/USDT reserve/imbalance: ${metrics.rejectedMaxTotalBtcExposure} / ${metrics.rejectedLowBtcReserve} / ${metrics.rejectedLowUsdtReserve} / ${metrics.rejectedVenueImbalance}`,
+  );
+  console.log(
+    `Rejected open/exposure/loss/failures: ${metrics.rejectedOpenTradeLimit} / ${metrics.rejectedExposureLimit} / ${metrics.rejectedSessionLoss} / ${metrics.rejectedFailureCircuitBreaker}`,
+  );
+  console.log(
+    `Global residual current/max: ${metrics.currentGlobalUnhedgedBtc.toFixed(8)} / ${metrics.maxObservedGlobalUnhedgedBtc.toFixed(8)} BTC`,
+  );
+  console.log(
+    `Consecutive failures current/max: ${metrics.currentConsecutiveFailures} / ${metrics.maxConsecutiveFailures}`,
   );
 }

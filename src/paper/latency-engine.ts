@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { FEES, type FeeConfig } from '../config/fees.js';
+import type { PaperRiskConfig } from '../config/risk.js';
 import {
   INITIAL_PAPER_BALANCES,
   MAX_PAPER_TRIGGER_AGE_MS,
@@ -13,6 +14,10 @@ import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import { simulateExecution } from '../scanner/execution-simulator.js';
 import type { SyncAssessment } from '../timing/sync-model.js';
+import {
+  PaperRiskManager,
+  type PaperRiskSummary,
+} from '../risk/paper-risk-manager.js';
 import {
   isValidNormalizedOrderBook,
   type NormalizedOrderBook,
@@ -61,6 +66,8 @@ export interface LatencyPaperTradingEngineOptions {
   maxTriggerAgeMs?: number;
   idGenerator?: () => string;
   onExecutionEvent?: (event: PaperExecutionEvent) => void;
+  riskConfig?: PaperRiskConfig;
+  riskManager?: PaperRiskManager;
 }
 
 interface InternalOrder extends PaperOrder {
@@ -94,7 +101,10 @@ function initialBalancesFromConfig(): PaperBalances {
 }
 
 function cloneTrade(trade: LatencyPaperTrade): LatencyPaperTrade {
-  return { ...trade };
+  return {
+    ...trade,
+    riskReasons: [...(trade.riskReasons ?? [])],
+  };
 }
 
 function cloneOrder(order: InternalOrder): PaperOrder {
@@ -167,6 +177,7 @@ export class LatencyPaperTradingEngine {
   private readonly onExecutionEvent:
     | ((event: PaperExecutionEvent) => void)
     | undefined;
+  private readonly riskManager: PaperRiskManager;
   private readonly seenEventIds = new Set<string>();
   private readonly trades: LatencyPaperTrade[] = [];
   private readonly orders = new Map<string, InternalOrder>();
@@ -200,6 +211,8 @@ export class LatencyPaperTradingEngine {
     }
     this.idGenerator = options.idGenerator ?? randomUUID;
     this.onExecutionEvent = options.onExecutionEvent;
+    this.riskManager =
+      options.riskManager ?? new PaperRiskManager(options.riskConfig);
   }
 
   triggerOpportunity(input: LatencyPaperExecutionInput): LatencyPaperTrade {
@@ -247,6 +260,18 @@ export class LatencyPaperTradingEngine {
       input.event.targetBaseSize *
       bestAsk *
       (1 + this.fees[input.event.buyExchange].takerRate);
+    const riskDecision = this.riskManager.assess({
+      balances: this.balances,
+      trades: this.trades,
+      buyExchange: input.event.buyExchange,
+      sellExchange: input.event.sellExchange,
+      requestedBaseSize: input.event.targetBaseSize,
+      projectedBuyUsdtCost: buyReservation,
+    });
+    if (!riskDecision.allowed) {
+      trade.riskReasons = [...riskDecision.reasons];
+      return this.reject(trade, 'RISK_REJECTED', input.timestamp);
+    }
     if (
       this.balances[input.event.buyExchange].usdtAvailable +
         PAPER_BALANCE_EPSILON <
@@ -349,6 +374,7 @@ export class LatencyPaperTradingEngine {
     }
     this.expireOrders(logicalTimestamp);
     this.refreshAndMaybeUnwind(logicalTimestamp);
+    this.riskManager.observeExposure(this.trades);
   }
 
   finish(): void {
@@ -390,10 +416,15 @@ export class LatencyPaperTradingEngine {
             : 'PARTIAL_BOTH';
       this.closeTrade(trade, outcome, 'FAILED', finalTimestamp);
     }
+    this.riskManager.observeExposure(this.trades);
   }
 
   getBalances(): PaperBalances {
     return clonePaperBalances(this.balances);
+  }
+
+  getRiskSummary(): PaperRiskSummary {
+    return this.riskManager.getSummary(this.balances, this.trades);
   }
 
   getTrades(): LatencyPaperTrade[] {
@@ -567,6 +598,7 @@ export class LatencyPaperTradingEngine {
       buyFilledSize: 0,
       sellFilledSize: 0,
       rejectionReason: null,
+      riskReasons: [],
       qualifiedAt: event.qualifiedAt ?? event.updatedAt,
       decisionAt: timestamp,
       buySubmittedAt: timestamp,
@@ -870,6 +902,7 @@ export class LatencyPaperTradingEngine {
       trade.filledAt = Math.max(buy.completedAt ?? 0, sell.completedAt ?? 0);
       trade.closedAt = trade.filledAt;
       this.emitTrade(trade, timestamp);
+      this.riskManager.observeTerminalTrade(trade);
       return;
     }
     if (terminal(buy) && terminal(sell)) {
@@ -1173,6 +1206,7 @@ export class LatencyPaperTradingEngine {
     trade.filledAt =
       trade.buyFilledSize > 0 || trade.sellFilledSize > 0 ? timestamp : null;
     this.emitTrade(trade, timestamp);
+    this.riskManager.observeTerminalTrade(trade);
   }
 
   private observePortfolioBooks(): void {

@@ -1,4 +1,5 @@
 import type { PaperBalance, PaperBalances } from './balances.js';
+import type { RiskReason } from '../risk/paper-risk-manager.js';
 
 export type PaperTradeState =
   | 'PENDING'
@@ -40,7 +41,8 @@ export type PaperTradeRejectionReason =
   | 'INSUFFICIENT_SELL_BTC'
   | 'NET_NOT_POSITIVE'
   | 'STALE_OPPORTUNITY'
-  | 'DUPLICATE_EVENT';
+  | 'DUPLICATE_EVENT'
+  | 'RISK_REJECTED';
 
 export interface PaperTrade {
   id: string;
@@ -64,6 +66,7 @@ export interface PaperTrade {
   buyFilledSize: number;
   sellFilledSize: number;
   rejectionReason: PaperTradeRejectionReason | null;
+  riskReasons?: RiskReason[];
   outcome?: PaperTradeOutcome | null;
 }
 

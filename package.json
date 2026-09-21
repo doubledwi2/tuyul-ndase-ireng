@@ -1,8 +1,8 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
-  "description": "BTC/USDT scanner with latency-aware virtual paper execution",
+  "description": "BTC/USDT scanner with inventory-aware virtual paper execution",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -12,7 +12,7 @@
     "paper": "tsx src/paper.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts src/paper/*.test.ts",
+    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts src/risk/*.test.ts src/paper/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

@@ -223,6 +223,34 @@ Saat replay mencapai EOF, `finish()` hanya mengekspirasi order dan melepaskan re
 
 Accounting melaporkan matched `paperEntryPnl`, signed unwind cash flow, unwind fee/cost, dan final paper realized PnL secara terpisah dari portfolio MTM. BUY-only, SELL-only, atau residual yang belum tertutup tidak diakui sebagai PnL hanya karena menghasilkan cash flow satu sisi; exposure sisanya terlihat pada inventory dan portfolio MTM. Istilah realized tetap berarti realized di ledger virtual—bukan profit uang nyata.
 
+### Phase 3.2 inventory and risk controls
+
+Cross-exchange execution membutuhkan inventory BTC dan USDT pada kedua venue. Spread yang valid dapat ditolak jika arah trade akan menghabiskan reserve, memperburuk distribusi BTC, menambah unhedged risk, melewati jumlah open trade, atau terjadi session halt. Risk manager berada sebelum paper reservation dan memakai projected post-trade balances, bukan hanya saldo saat ini.
+
+Baseline engineering di `src/config/risk.ts`:
+
+```text
+MAX_TOTAL_BTC_EXPOSURE = 0.25 BTC
+MAX_VENUE_BTC_IMBALANCE = 0.05 BTC
+MIN_VENUE_BTC_RESERVE = 0.02 BTC
+MIN_VENUE_USDT_RESERVE = 1000 USDT
+MAX_OPEN_PAPER_TRADES = 3
+MAX_UNHEDGED_BTC = 0.01 BTC
+MAX_SESSION_PAPER_LOSS_USDT = 50 USDT
+MAX_CONSECUTIVE_EXECUTION_FAILURES = 3
+REBALANCE_ALLOCATION_TOLERANCE_PERCENT = 10
+```
+
+Semua nilai dapat diinjeksi untuk test/replay dan bukan rekomendasi modal atau trading. Venue imbalance didefinisikan sebagai `abs(bybitTotalBtc - okxTotalBtc)`, dengan total venue mencakup available plus reserved. Projected BUY menambah BTC pada buy venue, sedangkan projected SELL mengurangi BTC pada sell venue. Arah yang melewati limit dan memperburuk imbalance ditolak; arah yang memperbaiki imbalance tetap dapat dipertimbangkan selama rule lain lulus. Maximum total BTC memakai worst-case BUY leg dan memasukkan remaining BUY exposure dari open trade. Guard unhedged memakai jumlah absolute residual dari seluruh trade open atau failed dan hanya memberi pengecualian untuk direction/size yang benar-benar mengurangi residual venue terkait tanpa overshoot.
+
+Projected sell venue harus tetap menyisakan minimum BTC available reserve setelah seluruh reservation lama dan candidate baru diperhitungkan. Projected buy spend, termasuk taker fee, harus tetap menyisakan minimum USDT available reserve. Risk rejection terjadi sebelum order dibuat, tidak mengubah balance, memakai rejection `RISK_REJECTED`, dan menyimpan seluruh typed `riskReasons` yang berlaku.
+
+Session berubah dari `RUNNING` menjadi sticky `RISK_HALTED` jika cumulative realized paper PnL mencapai loss limit atau consecutive execution failure mencapai threshold. `FAILED`, `BUY_ONLY`, `SELL_ONLY`, dan `UNWIND_FAILED` menaikkan counter; `CLEAN_FILL` atau `UNWOUND` mereset counter hanya selama session belum halt. Halt tetap aktif sampai process/session restart dan hanya memblokir entry baru—existing order, timeout, dan emergency unwind tetap diproses.
+
+Terminal menampilkan risk checks, rejection breakdown, current/max residual, failure streak, inventory available/reserved dan persentase BTC/USDT per venue. Rebalance suggestion memakai target sederhana 50/50 dengan tolerance 10%. Suggestion hanya diagnostik; engine tidak melakukan transfer virtual otomatis, transfer nyata, withdrawal, atau private exchange operation.
+
+Synthetic Phase 3.2 risk scenarios berada di `src/risk/paper-risk-manager.test.ts` dan integration halt/unwind berada di `src/paper/latency-engine.test.ts`; tidak ada threshold production yang diturunkan untuk membuat fixture lulus.
+
 ## Raw market recording
 
 Dalam live mode, setiap normalized top-50 order book state yang benar-benar dipakai pipeline disimpan append-only ke:
@@ -419,8 +447,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 2.3.2 final timing guard: complete.
 - Phase 3.0 idealized atomic paper engine: complete/compatibility.
 - Phase 3.1 execution latency, partial fill, dan leg-risk simulation: complete.
-- Phase 3.1.1 fresh-book unwind guard: complete/current.
+- Phase 3.1.1 fresh-book unwind guard: complete.
+- Phase 3.2 inventory, rebalancing suggestion, dan risk limits: complete/current.
 
-## Scope Phase 3.1.1
+## Scope Phase 3.2
 
-Scope versi ini mempertahankan deterministic order-arrival latency, reservation, successive partial fills, timeout, residual exposure, execution metrics, append-only execution event log, dan no-lookahead replay. Corrective guard memastikan emergency paper unwind hanya memakai fresh eligible venue update dan EOF tidak menciptakan synthetic fill. Tidak ada real order execution, transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan projected inventory checks, direction-aware imbalance/exposure guards, open-trade limit, session loss/failure circuit breakers, venue allocation metrics, dan informational rebalance suggestion di atas deterministic paper execution. Tidak ada real order execution, automatic transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.

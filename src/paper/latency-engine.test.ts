@@ -6,6 +6,10 @@ import {
   PAPER_EXECUTION_CONFIG,
   type PaperExecutionConfig,
 } from '../config/paper.js';
+import {
+  PAPER_RISK_CONFIG,
+  type PaperRiskConfig,
+} from '../config/risk.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import { DETERMINISTIC_HEALTHY_CLOCK } from '../timing/clock-health.js';
@@ -13,6 +17,7 @@ import type { SyncAssessment } from '../timing/sync-model.js';
 import type { NormalizedOrderBook } from '../types/orderbook.js';
 import type { PaperBalances } from './balances.js';
 import { LatencyPaperTradingEngine } from './latency-engine.js';
+import { PaperRiskManager } from '../risk/paper-risk-manager.js';
 
 const DECISION_AT = 1_000;
 
@@ -131,6 +136,8 @@ function executionConfig(
 function engine(options: {
   config?: Partial<PaperExecutionConfig>;
   balances?: PaperBalances;
+  riskConfig?: Partial<PaperRiskConfig>;
+  riskManager?: PaperRiskManager;
 } = {}): LatencyPaperTradingEngine {
   let id = 0;
   return new LatencyPaperTradingEngine({
@@ -138,6 +145,12 @@ function engine(options: {
     ...(options.balances === undefined
       ? {}
       : { initialBalances: options.balances }),
+    ...(options.riskConfig === undefined
+      ? {}
+      : { riskConfig: { ...PAPER_RISK_CONFIG, ...options.riskConfig } }),
+    ...(options.riskManager === undefined
+      ? {}
+      : { riskManager: options.riskManager }),
     idGenerator: () => `id-${++id}`,
   });
 }
@@ -221,11 +234,15 @@ test('two simultaneous candidates cannot oversubscribe reserved funds', () => {
     },
     okx: { ...INITIAL_PAPER_BALANCES.okx },
   };
-  const paperEngine = engine({ balances });
+  const paperEngine = engine({
+    balances,
+    riskConfig: { minVenueUsdtReserve: 0 },
+  });
   assert.equal(trigger(paperEngine, event('event-a')).state, 'SUBMITTING');
   const rejected = trigger(paperEngine, event('event-b'));
   assert.equal(rejected.state, 'REJECTED');
-  assert.equal(rejected.rejectionReason, 'INSUFFICIENT_BUY_USDT');
+  assert.equal(rejected.rejectionReason, 'RISK_REJECTED');
+  assert.ok(rejected.riskReasons?.includes('LOW_USDT_RESERVE'));
   assert.ok(paperEngine.getBalances().bybit.usdtAvailable >= 0);
   assert.equal(paperEngine.getMetrics().pretradeRejections, 1);
   assert.equal(paperEngine.getMetrics().executionFailures, 0);
@@ -394,4 +411,63 @@ test('SELL excess uses a BUY unwind on the sell venue', () => {
   assert.equal(unwindFill?.side, 'BUY');
   assert.equal(paperEngine.getBalances().okx.usdtReserved, 0);
   assert.ok(paperEngine.getBalances().okx.usdtAvailable >= 0);
+});
+
+test('risk rejection happens before submission and preserves detailed reasons', () => {
+  const paperEngine = engine({
+    riskConfig: { minVenueBtcReserve: 0.095 },
+  });
+  const before = paperEngine.getBalances();
+  const rejected = trigger(paperEngine);
+
+  assert.equal(rejected.state, 'REJECTED');
+  assert.equal(rejected.rejectionReason, 'RISK_REJECTED');
+  assert.deepEqual(rejected.riskReasons, ['LOW_BTC_RESERVE']);
+  assert.equal(paperEngine.getOrders().length, 0);
+  assert.deepEqual(paperEngine.getBalances(), before);
+  assert.equal(paperEngine.getRiskSummary().metrics.riskRejected, 1);
+});
+
+test('risk halt blocks new entries but existing order and unwind keep processing', () => {
+  const riskManager = new PaperRiskManager({
+    ...PAPER_RISK_CONFIG,
+    maxTotalBtcExposure: 1,
+    maxVenueBtcImbalance: 1,
+    minVenueBtcReserve: 0,
+    minVenueUsdtReserve: 0,
+    maxUnhedgedBtc: 1,
+    maxSessionPaperLossUsdt: 1_000,
+    maxConsecutiveExecutionFailures: 1,
+  });
+  const paperEngine = engine({ riskManager });
+  trigger(paperEngine, event('existing'));
+  riskManager.observeTerminalTrade({
+    id: 'synthetic-failure',
+    buyExchange: 'bybit',
+    sellExchange: 'okx',
+    state: 'FAILED',
+    outcome: 'BUY_ONLY',
+    closedAt: 1_001,
+    residualBaseExposure: 0,
+    realizedPaperPnl: 0,
+  });
+
+  const blocked = trigger(paperEngine, event('blocked'));
+  assert.equal(blocked.rejectionReason, 'RISK_REJECTED');
+  assert.ok(blocked.riskReasons?.includes('CONSECUTIVE_FAILURE_LIMIT'));
+
+  paperEngine.processOrderBook(book('bybit', 1_050, 99, 100), 1_050);
+  paperEngine.processOrderBook(book('okx', 1_050, 103, 104, 0.006, 1), 1_050);
+  paperEngine.processOrderBook(
+    book('okx', 1_250, 103, 104, 1e-13, 1),
+    1_250,
+  );
+  paperEngine.processOrderBook(book('bybit', 1_300, 98, 99), 1_300);
+
+  const existing = paperEngine
+    .getTrades()
+    .find((tradeSnapshot) => tradeSnapshot.opportunityEventId === 'existing');
+  assert.equal(existing?.outcome, 'UNWOUND');
+  assert.equal(existing?.residualBaseExposure, 0);
+  assert.equal(paperEngine.getRiskSummary().state, 'RISK_HALTED');
 });

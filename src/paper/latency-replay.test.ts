@@ -113,6 +113,7 @@ for (const fixture of CASES) {
 
     assert.deepEqual(second.summary, first.summary);
     assert.deepEqual(second.metrics, first.metrics);
+    assert.deepEqual(second.riskSummary, first.riskSummary);
     assert.deepEqual(second.orders, first.orders);
     assert.deepEqual(second.fills, first.fills);
   });

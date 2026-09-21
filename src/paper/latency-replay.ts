@@ -17,6 +17,7 @@ import type {
   PaperOrder,
   PaperSessionSummary,
 } from './types.js';
+import type { PaperRiskSummary } from '../risk/paper-risk-manager.js';
 
 export interface LatencyPaperReplayOptions {
   filePath: string;
@@ -36,6 +37,7 @@ export interface LatencyPaperReplayResult {
   fills: PaperFill[];
   summary: PaperSessionSummary;
   metrics: PaperExecutionMetrics;
+  riskSummary: PaperRiskSummary;
 }
 
 export async function runLatencyPaperReplay(
@@ -93,5 +95,6 @@ export async function runLatencyPaperReplay(
     fills: engine.getFills(),
     summary: engine.getSummary(),
     metrics: engine.getMetrics(),
+    riskSummary: engine.getRiskSummary(),
   };
 }

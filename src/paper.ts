@@ -18,6 +18,7 @@ import {
 import {
   printLatencyPaperTrade,
   printPaperExecutionMetrics,
+  printPaperRiskSummary,
   printPaperSummary,
 } from './paper/console.js';
 import {
@@ -96,6 +97,7 @@ const metricsTimer = setInterval(() => {
   printMetricsSummary(pipeline.getMetricsSummary());
   printPaperSummary(paperEngine.getSummary());
   printPaperExecutionMetrics(paperEngine.getMetrics());
+  printPaperRiskSummary(paperEngine.getRiskSummary());
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
@@ -114,6 +116,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   printMetricsSummary(pipeline.getMetricsSummary());
   printPaperSummary(paperEngine.getSummary());
   printPaperExecutionMetrics(paperEngine.getMetrics());
+  printPaperRiskSummary(paperEngine.getRiskSummary());
   await Promise.all([pipeline.flush(), paperCoordinator.flush()]);
   process.exit(0);
 }
