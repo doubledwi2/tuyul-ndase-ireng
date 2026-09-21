@@ -15,8 +15,20 @@ test('initial paper balances match the engineering baseline', () => {
     okx: { ...INITIAL_PAPER_BALANCES.okx },
   });
   assert.deepEqual(balances, {
-    bybit: { exchange: 'bybit', btcAvailable: 0.1, usdtAvailable: 10_000 },
-    okx: { exchange: 'okx', btcAvailable: 0.1, usdtAvailable: 10_000 },
+    bybit: {
+      exchange: 'bybit',
+      btcAvailable: 0.1,
+      btcReserved: 0,
+      usdtAvailable: 10_000,
+      usdtReserved: 0,
+    },
+    okx: {
+      exchange: 'okx',
+      btcAvailable: 0.1,
+      btcReserved: 0,
+      usdtAvailable: 10_000,
+      usdtReserved: 0,
+    },
   });
 });
 

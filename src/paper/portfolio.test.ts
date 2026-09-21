@@ -55,8 +55,16 @@ test('portfolio valuation marks total BTC to the reference price', () => {
 
 test('portfolio valuation reflects inventory and USDT changes after trade', () => {
   const balances = createPaperBalances({
-    bybit: { exchange: 'bybit', btcAvailable: 0.11, usdtAvailable: 9_998.999 },
-    okx: { exchange: 'okx', btcAvailable: 0.09, usdtAvailable: 10_001.02897 },
+    bybit: {
+      ...INITIAL_PAPER_BALANCES.bybit,
+      btcAvailable: 0.11,
+      usdtAvailable: 9_998.999,
+    },
+    okx: {
+      ...INITIAL_PAPER_BALANCES.okx,
+      btcAvailable: 0.09,
+      usdtAvailable: 10_001.02897,
+    },
   });
   assert.ok(Math.abs(valuePaperPortfolio(balances, 101.5) - 20_020.32797) < 1e-9);
 });

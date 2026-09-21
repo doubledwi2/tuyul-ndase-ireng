@@ -32,8 +32,16 @@ export function calculatePaperInventory(
   balances: Readonly<PaperBalances>,
 ): PaperInventory {
   return {
-    totalBTC: balances.bybit.btcAvailable + balances.okx.btcAvailable,
-    totalUSDT: balances.bybit.usdtAvailable + balances.okx.usdtAvailable,
+    totalBTC:
+      balances.bybit.btcAvailable +
+      balances.bybit.btcReserved +
+      balances.okx.btcAvailable +
+      balances.okx.btcReserved,
+    totalUSDT:
+      balances.bybit.usdtAvailable +
+      balances.bybit.usdtReserved +
+      balances.okx.usdtAvailable +
+      balances.okx.usdtReserved,
   };
 }
 

@@ -15,22 +15,33 @@ import {
   printMetricsSummary,
   printOpportunityEvent,
 } from './ui/console.js';
-import { PaperTradingCoordinator } from './paper/coordinator.js';
-import { printPaperSummary, printPaperTrade } from './paper/console.js';
-import { PaperTradingEngine } from './paper/engine.js';
 import {
-  createLivePaperTradePath,
-  PaperTradeRecorder,
-} from './paper/trade-recorder.js';
+  printLatencyPaperTrade,
+  printPaperExecutionMetrics,
+  printPaperSummary,
+} from './paper/console.js';
+import {
+  createLivePaperEventPath,
+  PaperExecutionRecorder,
+} from './paper/execution-recorder.js';
+import { LatencyPaperCoordinator } from './paper/latency-coordinator.js';
+import { LatencyPaperTradingEngine } from './paper/latency-engine.js';
 
 const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;
-const tradePath = createLivePaperTradePath();
-const paperEngine = new PaperTradingEngine();
-const paperCoordinator = new PaperTradingCoordinator({
+const eventPath = createLivePaperEventPath();
+const paperRecorder = new PaperExecutionRecorder(eventPath);
+const paperEngine = new LatencyPaperTradingEngine({
+  onExecutionEvent: (event) => {
+    void paperRecorder.record(event);
+    if (event.type === 'TRADE' && event.trade.closedAt !== null) {
+      printLatencyPaperTrade(event.trade);
+    }
+  },
+});
+const paperCoordinator = new LatencyPaperCoordinator({
   engine: paperEngine,
-  recorder: new PaperTradeRecorder(tradePath),
-  onTrade: printPaperTrade,
+  recorder: paperRecorder,
 });
 const clockHealthMonitor = new ClockHealthMonitor(CLOCK_JUMP_THRESHOLD_MS);
 let pipeline: MarketPipeline;
@@ -46,7 +57,8 @@ pipeline = new MarketPipeline({
 });
 
 console.log('[PAPER] Virtual execution mode; no private exchange API is used.');
-console.log(`[PAPER] Trade output: ${tradePath}`);
+console.log('[PAPER] Latency-aware event-driven virtual execution is enabled.');
+console.log(`[PAPER] Event output: ${eventPath}`);
 
 function receiveOrderBook(orderBook: NormalizedOrderBook): void {
   if (!isValidNormalizedOrderBook(orderBook)) {
@@ -58,10 +70,8 @@ function receiveOrderBook(orderBook: NormalizedOrderBook): void {
     orderBook.receivedTimestamp,
     orderBook.receivedMonotonicMs ?? performance.now(),
   );
-  const snapshot = pipeline.processOrderBook(orderBook, timestamp, clockHealth);
-  if (snapshot !== null) {
-    paperCoordinator.observeSnapshot(snapshot);
-  }
+  pipeline.processOrderBook(orderBook, timestamp, clockHealth);
+  paperCoordinator.processOrderBook(orderBook, timestamp);
 }
 
 const connections: ExchangeConnection[] = [
@@ -85,6 +95,7 @@ const outputTimer = setInterval(() => {
 const metricsTimer = setInterval(() => {
   printMetricsSummary(pipeline.getMetricsSummary());
   printPaperSummary(paperEngine.getSummary());
+  printPaperExecutionMetrics(paperEngine.getMetrics());
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
@@ -102,6 +113,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   }
   printMetricsSummary(pipeline.getMetricsSummary());
   printPaperSummary(paperEngine.getSummary());
+  printPaperExecutionMetrics(paperEngine.getMetrics());
   await Promise.all([pipeline.flush(), paperCoordinator.flush()]);
   process.exit(0);
 }

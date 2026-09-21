@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { INITIAL_PAPER_BALANCES } from '../config/paper.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import { DETERMINISTIC_HEALTHY_CLOCK } from '../timing/clock-health.js';
@@ -218,8 +219,11 @@ test('latest quality failure rejects an otherwise net-positive trigger', () => {
 
 test('insufficient buy USDT rejects with balances unchanged', () => {
   const paperEngine = engine({
-    bybit: { exchange: 'bybit', btcAvailable: 0.1, usdtAvailable: 0.5 },
-    okx: { exchange: 'okx', btcAvailable: 0.1, usdtAvailable: 10_000 },
+    bybit: {
+      ...INITIAL_PAPER_BALANCES.bybit,
+      usdtAvailable: 0.5,
+    },
+    okx: { ...INITIAL_PAPER_BALANCES.okx },
   });
   const before = paperEngine.getBalances();
   const trade = execute(paperEngine);
@@ -229,8 +233,11 @@ test('insufficient buy USDT rejects with balances unchanged', () => {
 
 test('insufficient sell BTC rejects with balances unchanged', () => {
   const paperEngine = engine({
-    bybit: { exchange: 'bybit', btcAvailable: 0.1, usdtAvailable: 10_000 },
-    okx: { exchange: 'okx', btcAvailable: 0.005, usdtAvailable: 10_000 },
+    bybit: { ...INITIAL_PAPER_BALANCES.bybit },
+    okx: {
+      ...INITIAL_PAPER_BALANCES.okx,
+      btcAvailable: 0.005,
+    },
   });
   const before = paperEngine.getBalances();
   const trade = execute(paperEngine);

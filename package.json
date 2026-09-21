@@ -1,8 +1,8 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
-  "description": "BTC/USDT scanner with deterministic virtual paper execution",
+  "description": "BTC/USDT scanner with latency-aware virtual paper execution",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",

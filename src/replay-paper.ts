@@ -1,11 +1,15 @@
 import { DEFAULT_ORDERBOOK_RECORD_PATH } from './recording/orderbook-recorder.js';
 import type { ReplaySpeed } from './replay/replay-engine.js';
-import { printPaperSummary, printPaperTrade } from './paper/console.js';
-import { runPaperReplay } from './paper/replay.js';
 import {
-  createReplayPaperTradePath,
-  PaperTradeRecorder,
-} from './paper/trade-recorder.js';
+  printLatencyPaperTrade,
+  printPaperExecutionMetrics,
+  printPaperSummary,
+} from './paper/console.js';
+import {
+  createReplayPaperEventPath,
+  PaperExecutionRecorder,
+} from './paper/execution-recorder.js';
+import { runLatencyPaperReplay } from './paper/latency-replay.js';
 
 interface ReplayArguments {
   filePath: string;
@@ -41,17 +45,20 @@ function parseArguments(args: readonly string[]): ReplayArguments {
 
 async function main(): Promise<void> {
   const { filePath, speed } = parseArguments(process.argv.slice(2));
-  const tradePath = createReplayPaperTradePath();
+  const eventPath = createReplayPaperEventPath();
   console.log(`[PAPER REPLAY] File: ${filePath}`);
   console.log(`[PAPER REPLAY] Speed: ${speed}`);
-  console.log(`[PAPER REPLAY] Trade output: ${tradePath}`);
-  const result = await runPaperReplay({
+  console.log(`[PAPER REPLAY] Event output: ${eventPath}`);
+  const result = await runLatencyPaperReplay({
     filePath,
     speed,
-    recorder: new PaperTradeRecorder(tradePath),
-    onTrade: printPaperTrade,
+    recorder: new PaperExecutionRecorder(eventPath),
   });
+  for (const trade of result.trades) {
+    printLatencyPaperTrade(trade);
+  }
   printPaperSummary(result.summary);
+  printPaperExecutionMetrics(result.metrics);
   console.log(`\n[PAPER REPLAY] Processed records: ${result.processedRecords}`);
 }
 

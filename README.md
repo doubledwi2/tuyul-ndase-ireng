@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Paper Trading Engine v0.3.0 adalah Phase 3.0 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu dapat menjalankan accounting virtual untuk opportunity yang sudah `QUALIFIED`.
+Latency-aware Paper Trading Engine v0.3.1 adalah Phase 3.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, serta emergency unwind.
 
 Aplikasi ini tidak memakai API key, autentikasi, private endpoint, atau real order. Paper trading hanya mengubah saldo virtual in-memory dan menulis hasilnya ke file JSONL lokal; tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
 
@@ -168,13 +168,13 @@ Mode ini tetap hanya membuka public WebSocket Bybit dan OKX. Tidak ada jalur kod
 | Bybit | 0.10 | 10,000 |
 | OKX | 0.10 | 10,000 |
 
-`MarketPipeline` menerbitkan event, `PaperTradingCoordinator` hanya meneruskan state `QUALIFIED`, dan `PaperTradingEngine` mensimulasikan ulang kedua leg dari latest normalized order book dengan `simulateExecution()`. Trigger ditolak jika umur event melebihi baseline `MAX_PAPER_TRIGGER_AGE_MS = 100`, sync terbaru tidak `SYNC_HEALTHY`, depth tidak dapat memenuhi target, result terbaru tidak net-positive/qualified, saldo venue tidak cukup, atau event ID sudah pernah diproses.
+`MarketPipeline` menerbitkan event dan coordinator hanya meneruskan state `QUALIFIED`. Trigger ditolak jika umur event melebihi baseline `MAX_PAPER_TRIGGER_AGE_MS = 100`, sync terbaru tidak `SYNC_HEALTHY`, book tidak valid, quality terbaru gagal, saldo venue tidak cukup untuk reservation, atau event ID sudah pernah diproses.
 
 Rejection reason bertipe tetap: `NOT_QUALIFIED`, `SYNC_UNHEALTHY`, `INSUFFICIENT_DEPTH`, `INSUFFICIENT_BUY_USDT`, `INSUFFICIENT_SELL_BTC`, `NET_NOT_POSITIVE`, `STALE_OPPORTUNITY`, dan `DUPLICATE_EVENT`.
 
 Kedua venue harus sudah memiliki inventory. Contoh BUY Bybit / SELL OKX mengurangi USDT dan menambah BTC virtual di Bybit, sementara BTC berkurang dan USDT bertambah di OKX. Tidak ada transfer antar-exchange. Fee dibebankan pada kedua leg menggunakan config taker fee Phase 2.
 
-Phase 3.0 memakai idealized atomic fill: kedua leg hanya di-commit bersama jika keduanya fully filled dan seluruh check lolos. Jika satu leg atau balance check gagal, tidak ada saldo yang berubah. Model ini belum memasukkan exchange API latency, acknowledgement delay, partial fill, leg mismatch, cancel/retry, atau network failure; snapshot dianggap tersedia pada decision time. Batasan tersebut tetap untuk fase berikutnya, bukan disimulasikan diam-diam di versi ini.
+Engine Phase 3.0 dengan idealized atomic fill tetap tersedia sebagai compatibility path dan unit-test baseline. Default `npm run paper` dan `npm run replay:paper` sekarang memakai state machine Phase 3.1 yang latency-aware; atomicity hanya berlaku pada accounting setiap fill individual, bukan lagi pada keseluruhan dua leg.
 
 Trade net PnL dihitung dari cash flow kedua leg:
 
@@ -192,7 +192,33 @@ paperPortfolioPnlUsdt = currentPortfolioValueUsdt - initialPortfolioValueUsdt
 
 Summary menampilkan trade attempted/filled/rejected, gross PnL, fee, net trade PnL, total inventory, portfolio value/MTM PnL, dan saldo BTC/USDT per exchange. Floating-point residual yang sangat dekat nol di-clamp dengan epsilon agar saldo virtual tidak menjadi negatif karena noise representasi.
 
-Paper trade live ditulis append-only per run ke `data/paper/live-<run-id>/trades.jsonl`. Record berisi `recordedAt` dan snapshot `PaperTrade`, terpisah dari raw market data dan opportunity event.
+Paper order, fill, dan trade transition live ditulis append-only per run ke `data/paper/live-<run-id>/paper-events.jsonl`, terpisah dari raw market data dan opportunity event.
+
+### Phase 3.1 execution state machine
+
+Baseline deterministik di `src/config/paper.ts`:
+
+```text
+PAPER_BUY_ORDER_LATENCY_MS = 50
+PAPER_SELL_ORDER_LATENCY_MS = 50
+PAPER_ORDER_TIMEOUT_MS = 250
+PAPER_MAX_UNHEDGED_DURATION_MS = 200
+PAPER_ALLOW_PARTIAL_FILL = true
+```
+
+Nilai tersebut adalah parameter simulasi, bukan hasil pengukuran latency Bybit/OKX. Tidak ada `Math.random()` dalam decision logic. BUY dan SELL disubmit secara logical concurrent pada `decisionAt`; masing-masing baru boleh memakai first matching venue update pada atau setelah `arrivalAt`. Update sebelum arrival tidak dapat mengisi order, dan replay tidak memindai data masa depan untuk memilih harga yang lebih baik.
+
+Order dapat mengisi remaining size pada successive normalized-book update sampai deadline. Satu object snapshot hanya dipakai sekali per order evaluation. Setiap attempt hanya mengonsumsi liquidity yang terlihat pada snapshot tersebut, tetapi paper fill tidak mengubah public order book global. Konsekuensinya, liquidity yang sama bisa terlihat kembali pada update berikutnya—ini batas model snapshot, bukan klaim bahwa paper order memengaruhi exchange.
+
+State order adalah `PENDING`, `SUBMITTED`, `PARTIALLY_FILLED`, `FILLED`, `TIMED_OUT`, dan `CANCELLED`. Fill aktual disimpan terpisah dengan size, average price, notional, fee, venue, side, dan logical timestamp. Fee hanya dikenakan pada notional yang benar-benar terisi.
+
+Sebelum submission, BUY me-reserve estimasi USDT berdasarkan current best ask plus fee, sedangkan SELL me-reserve requested BTC. Balance mempunyai `available` dan `reserved`; fill mengonsumsi reservation, lalu sisa reservation dilepas saat filled, timeout, atau cancel. Karena reservation dilakukan sebelum order dibuat, dua candidate concurrent tidak dapat memakai saldo virtual yang sama.
+
+Perbedaan `buyFilledSize - sellFilledSize` menjadi residual BTC exposure. Trade dapat berada pada `SUBMITTING`, `PARTIALLY_FILLED`, `ONE_LEG_FILLED`, `UNHEDGED`, `UNWINDING`, `FILLED`, `CLOSED`, `FAILED`, atau `REJECTED`. Outcome final dibedakan menjadi `CLEAN_FILL`, `PARTIAL_BOTH`, `BUY_ONLY`, `SELL_ONLY`, `UNWOUND`, `UNWIND_FAILED`, `TIMEOUT_NO_FILL`, dan `REJECTED_PRETRADE`.
+
+Jika mismatch bertahan selama 200 ms, entry order yang masih terbuka dibatalkan dan engine mencoba emergency unwind virtual pada venue yang memegang excess inventory, memakai latest book yang sudah terlihat. Unwind terkena depth, slippage, dan taker fee. Unwind yang tidak dapat menutup seluruh residual menghasilkan `FAILED`/`UNWIND_FAILED`; residual tidak dipalsukan menjadi nol.
+
+Accounting melaporkan matched `paperEntryPnl`, signed unwind cash flow, unwind fee/cost, dan final paper realized PnL secara terpisah dari portfolio MTM. BUY-only, SELL-only, atau residual yang belum tertutup tidak diakui sebagai PnL hanya karena menghasilkan cash flow satu sisi; exposure sisanya terlihat pada inventory dan portfolio MTM. Istilah realized tetap berarti realized di ledger virtual—bukan profit uang nyata.
 
 ## Raw market recording
 
@@ -285,9 +311,9 @@ Dataset order book dapat dijalankan melalui pipeline dan paper engine yang sama 
 npm run replay:paper -- --file data/orderbooks.jsonl --speed max
 ```
 
-Replay memakai `recordedAt` sebagai waktu logis. Config dan urutan input yang sama menghasilkan filled/rejected count, final balance, fee, net trade PnL, dan portfolio value yang sama; UUID lifecycle boleh berbeda. Hasil paper trade disimpan terpisah per run di `data/replays/paper-<run-id>/paper-trades.jsonl`, sedangkan input tidak ditulis ulang. Jika tidak ada attempt, writer tetap kosong dan file output tidak perlu dibuat.
+Replay memakai `recordedAt` sebagai waktu logis dan state machine yang sama dengan live paper mode, tanpa `sleep` di business logic. Config dan urutan input yang sama menghasilkan order state, fill, balance, residual exposure, unwind, paper PnL, dan portfolio value yang sama; UUID lifecycle boleh berbeda. Seluruh transition disimpan terpisah per run di `data/replays/paper-<run-id>/paper-events.jsonl`, sedangkan input tidak ditulis ulang. Jika tidak ada event paper, writer tetap kosong dan file output tidak perlu dibuat.
 
-Fixture `fixtures/paper-qualified-orderbooks.jsonl` menyediakan synthetic opportunity yang diketahui dapat menjadi `QUALIFIED` dengan config test. Dataset aktual boleh menghasilkan nol paper trade jika tidak memiliki event `QUALIFIED`; itu hasil valid dan threshold tidak diturunkan otomatis.
+Fixture Phase 3.0 tetap tersedia di `fixtures/paper-qualified-orderbooks.jsonl`. Fixture kecil Phase 3.1 berada di `fixtures/paper-3.1/`: clean fill, BUY-only, SELL-only, partial mismatch, timeout tanpa fill, unwind sukses, dan unwind gagal. Dataset aktual boleh menghasilkan nol paper trade jika tidak memiliki event `QUALIFIED`; itu hasil valid dan threshold tidak diturunkan otomatis.
 
 ## Opportunity metrics
 
@@ -388,8 +414,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 2.3 latency, clock health, dan synchronization: complete.
 - Phase 2.3.1 clock-offset baseline correction: complete.
 - Phase 2.3.2 final timing guard: complete.
-- Phase 3.0 paper trading engine: complete/current.
+- Phase 3.0 idealized atomic paper engine: complete/compatibility.
+- Phase 3.1 execution latency, partial fill, dan leg-risk simulation: complete/current.
 
-## Scope Phase 3.0
+## Scope Phase 3.1
 
-Scope versi ini menambahkan virtual balance, idealized atomic paper execution, inventory metrics, paper trade JSONL, dan deterministic paper replay di atas pipeline Phase 2. Tidak ada real order execution, partial fill/leg-risk simulation, order latency, retry, transfer, private API, API key, database production, atau dashboard.
+Scope versi ini menambahkan deterministic order-arrival latency, reservation, successive partial fills, timeout, residual exposure, emergency paper unwind, execution metrics, append-only execution event log, dan no-lookahead replay. Tidak ada real order execution, transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.

@@ -1,0 +1,5 @@
+{"recordedAt":1000,"orderBook":{"exchange":"bybit","symbol":"BTC/USDT","bids":[{"price":99,"size":1}],"asks":[{"price":100,"size":1}],"exchangeTimestamp":1000,"matchingEngineTimestamp":1000,"receivedTimestamp":1000}}
+{"recordedAt":1000,"orderBook":{"exchange":"okx","symbol":"BTC/USDT","bids":[{"price":103,"size":1}],"asks":[{"price":104,"size":1}],"exchangeTimestamp":1000,"matchingEngineTimestamp":null,"receivedTimestamp":1000}}
+{"recordedAt":1000,"orderBook":{"exchange":"bybit","symbol":"BTC/USDT","bids":[{"price":99,"size":1}],"asks":[{"price":100,"size":1}],"exchangeTimestamp":1000,"matchingEngineTimestamp":1000,"receivedTimestamp":1000}}
+{"recordedAt":1050,"orderBook":{"exchange":"bybit","symbol":"BTC/USDT","bids":[{"price":99,"size":1}],"asks":[{"price":100,"size":0.001}],"exchangeTimestamp":1050,"matchingEngineTimestamp":1050,"receivedTimestamp":1050}}
+{"recordedAt":1050,"orderBook":{"exchange":"okx","symbol":"BTC/USDT","bids":[{"price":103,"size":1}],"asks":[{"price":104,"size":1}],"exchangeTimestamp":1050,"matchingEngineTimestamp":null,"receivedTimestamp":1050}}
