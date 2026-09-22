@@ -6,6 +6,7 @@ import type {
   OrderBookConnection,
   OrderBookHandler,
 } from '../types/orderbook.js';
+import type { ExchangeStatusHandler } from '../types/market.js';
 import {
   applyLevelUpdates,
   isRecord,
@@ -119,7 +120,10 @@ export class OkxOrderBookState {
   }
 }
 
-export function connectOkx(onOrderBook: OrderBookHandler): OrderBookConnection {
+export function connectOkx(
+  onOrderBook: OrderBookHandler,
+  onStatus?: ExchangeStatusHandler,
+): OrderBookConnection {
   let socket: WebSocket | null = null;
   let heartbeat: NodeJS.Timeout | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
@@ -152,6 +156,7 @@ export function connectOkx(onOrderBook: OrderBookHandler): OrderBookConnection {
       socket = new WebSocket(URL);
       socket.on('open', () => {
         console.log('[OKX] Connected');
+        onStatus?.(true);
         lastMessageAt = Date.now();
         pingSentAt = null;
         socket?.send(
@@ -197,6 +202,7 @@ export function connectOkx(onOrderBook: OrderBookHandler): OrderBookConnection {
         console.error(`[OKX] WebSocket error: ${error.message}`);
       });
       socket.on('close', () => {
+        onStatus?.(false);
         clearHeartbeat();
         socket = null;
         scheduleReconnect();
@@ -211,6 +217,7 @@ export function connectOkx(onOrderBook: OrderBookHandler): OrderBookConnection {
   return {
     close: () => {
       stopped = true;
+      onStatus?.(false);
       clearHeartbeat();
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer);

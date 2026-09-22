@@ -138,6 +138,7 @@ function engine(options: {
   balances?: PaperBalances;
   riskConfig?: Partial<PaperRiskConfig>;
   riskManager?: PaperRiskManager;
+  maxPaperHistory?: number;
 } = {}): LatencyPaperTradingEngine {
   let id = 0;
   return new LatencyPaperTradingEngine({
@@ -151,6 +152,9 @@ function engine(options: {
     ...(options.riskManager === undefined
       ? {}
       : { riskManager: options.riskManager }),
+    ...(options.maxPaperHistory === undefined
+      ? {}
+      : { maxPaperHistory: options.maxPaperHistory }),
     idGenerator: () => `id-${++id}`,
   });
 }
@@ -470,4 +474,109 @@ test('risk halt blocks new entries but existing order and unwind keep processing
   assert.equal(existing?.outcome, 'UNWOUND');
   assert.equal(existing?.residualBaseExposure, 0);
   assert.equal(paperEngine.getRiskSummary().state, 'RISK_HALTED');
+});
+
+test('engine state clean restart preserves balances, history, risk, and PnL', () => {
+  const original = engine();
+  trigger(original);
+  original.processOrderBook(book('bybit', 1_050, 99, 100), 1_050);
+  original.processOrderBook(book('okx', 1_050, 103, 104), 1_050);
+
+  const restored = LatencyPaperTradingEngine.fromState(original.exportState(), {
+    idGenerator: () => 'restored-id',
+  });
+  assert.deepEqual(restored.getBalances(), original.getBalances());
+  assert.deepEqual(restored.getTrades(), original.getTrades());
+  assert.deepEqual(restored.getOrders(), original.getOrders());
+  assert.deepEqual(restored.getFills(), original.getFills());
+  assert.deepEqual(restored.getRiskSummary(), original.getRiskSummary());
+  assert.deepEqual(restored.getSummary(), original.getSummary());
+});
+
+test('recovery cancels active orders, releases reservations, and fabricates no fill', () => {
+  const original = engine();
+  trigger(original);
+  const restored = LatencyPaperTradingEngine.fromState(original.exportState());
+  restored.applyRecoveryPolicy(2_000);
+
+  const balancesAfter = restored.getBalances();
+  assert.equal(balancesAfter.bybit.usdtReserved, 0);
+  assert.equal(balancesAfter.okx.btcReserved, 0);
+  assert.ok(balancesAfter.bybit.usdtAvailable >= 0);
+  assert.ok(balancesAfter.okx.btcAvailable >= 0);
+  assert.equal(restored.getFills().length, 0);
+  assert.ok(
+    restored.getOrders().every((order) => order.state === 'CANCELLED'),
+  );
+  assert.equal(restored.getTrades()[0]?.outcome, 'FAILED_RECOVERY');
+});
+
+test('recovery preserves unhedged residual without stale-book unwind', () => {
+  const original = engine({ config: { maxUnhedgedDurationMs: 1_000 } });
+  trigger(original);
+  original.processOrderBook(book('bybit', 1_050, 99, 100), 1_050);
+  original.processOrderBook(
+    book('okx', 1_250, 103, 104, 1e-13, 1),
+    1_250,
+  );
+  assert.equal(original.getTrades()[0]?.residualBaseExposure, 0.01);
+
+  const restored = LatencyPaperTradingEngine.fromState(original.exportState());
+  restored.applyRecoveryPolicy(2_000);
+  const tradeAfter = restored.getTrades()[0];
+  assert.equal(tradeAfter?.state, 'RECOVERY_REQUIRED');
+  assert.equal(tradeAfter?.outcome, 'FAILED_RECOVERY');
+  assert.equal(tradeAfter?.residualBaseExposure, 0.01);
+  assert.equal(restored.getFills().length, 1);
+  restored.processOrderBook(book('bybit', 2_100, 99, 100), 2_100);
+  assert.equal(restored.getFills().length, 1);
+});
+
+test('sticky risk halt survives engine state restore and blocks a new entry', () => {
+  const riskManager = new PaperRiskManager({
+    ...PAPER_RISK_CONFIG,
+    maxSessionPaperLossUsdt: 1,
+  });
+  riskManager.observeTerminalTrade({
+    id: 'loss-before-restart',
+    buyExchange: 'bybit',
+    sellExchange: 'okx',
+    state: 'CLOSED',
+    outcome: 'CLEAN_FILL',
+    closedAt: 10,
+    residualBaseExposure: 0,
+    realizedPaperPnl: -1,
+  });
+  const original = engine({ riskManager });
+  const restored = LatencyPaperTradingEngine.fromState(original.exportState());
+  assert.equal(restored.getRiskSummary().state, 'RISK_HALTED');
+  const rejected = trigger(restored, event('after-restart'));
+  assert.equal(rejected.rejectionReason, 'RISK_REJECTED');
+  assert.ok(rejected.riskReasons?.includes('SESSION_LOSS_LIMIT'));
+});
+
+test('restore fails closed for invalid enum and reservation mismatch', () => {
+  const original = engine();
+  trigger(original);
+  const invalidEnum = structuredClone(original.exportState());
+  invalidEnum.orders[0]!.state = 'BROKEN' as typeof invalidEnum.orders[0]['state'];
+  assert.throws(
+    () => LatencyPaperTradingEngine.fromState(invalidEnum),
+    /Invalid engine state/,
+  );
+
+  const mismatch = structuredClone(original.exportState());
+  mismatch.balances.bybit.usdtReserved += 1;
+  assert.throws(
+    () => LatencyPaperTradingEngine.fromState(mismatch),
+    /reservation mismatch/,
+  );
+});
+
+test('terminal in-memory paper history is bounded', () => {
+  const paperEngine = engine({ maxPaperHistory: 1 });
+  trigger(paperEngine, { ...event('old'), state: 'DETECTED' });
+  trigger(paperEngine, { ...event('new'), state: 'DETECTED' });
+  assert.equal(paperEngine.getTrades().length, 1);
+  assert.equal(paperEngine.getTrades()[0]?.opportunityEventId, 'new');
 });

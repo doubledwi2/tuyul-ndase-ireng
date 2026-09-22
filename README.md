@@ -1,8 +1,8 @@
 # tuyul-ndase-ireng
 
-Latency-aware Paper Trading Engine v0.3.1 adalah Phase 3.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, serta emergency unwind.
+Durable Paper Trading Engine v0.4.0 adalah Phase 4.0 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
-Aplikasi ini tidak memakai API key, autentikasi, private endpoint, atau real order. Paper trading hanya mengubah saldo virtual in-memory dan menulis hasilnya ke file JSONL lokal; tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
+Aplikasi ini tidak memakai API key, autentikasi, private endpoint, atau real order. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint dan journal lokal, sementara transition per-run tetap ditulis sebagai JSONL. Tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
 
 ## Data source
 
@@ -117,7 +117,7 @@ Estimator terpisah untuk Bybit dan OKX menyimpan 200 observed-ingress terbaru da
 
 Primary sync status adalah `SYNC_HEALTHY`, `SYNC_WARMING_UP`, `SOURCE_CLOCK_UNAVAILABLE`, `SOURCE_OFFSET_DEVIATION_HIGH`, `RECEIVE_SKEW_HIGH`, `SOURCE_SKEW_HIGH`, `BOOK_TOO_OLD`, `CLOCK_UNHEALTHY`, atau `TIMESTAMP_ANOMALY`. Array `reasons` mempertahankan seluruh kegagalan sekaligus. Jika source timestamp salah satu exchange tidak tersedia, estimator melaporkan `UNAVAILABLE` tanpa mengarang nilai dan sync reason menjadi `SOURCE_CLOCK_UNAVAILABLE`. Ini tidak berarti market data exchange rusak; timing quality-nya belum cukup untuk qualification. Cross-exchange source skew tetap merupakan sanity check antar-source clock, bukan bukti sinkronisasi absolut. Karena OKX `books` tidak menyediakan matching-engine timestamp ekuivalen Bybit `cts`, `matchingEngineSkewMs` tetap `null`.
 
-`ClockHealthMonitor` membandingkan `wallDelta - monotonicDelta`. Sampel pertama `WARMING_UP`; drift mendadak di atas 50 ms menjadi `CLOCK_JUMP_DETECTED`. Local clock-jump detection ini terpisah dari source-vs-host offset estimator. Keduanya hanya mendeteksi dan melaporkan—tidak mengubah clock OS, exchange timestamp, atau economic ordering. Infrastruktur VPS/NTP/chrony yang lebih ketat berada di roadmap Phase 4.
+`ClockHealthMonitor` membandingkan `wallDelta - monotonicDelta`. Sampel pertama `WARMING_UP`; drift mendadak di atas 50 ms menjadi `CLOCK_JUMP_DETECTED`. Local clock-jump detection ini terpisah dari source-vs-host offset estimator. Keduanya hanya mendeteksi dan melaporkan—tidak mengubah clock OS, exchange timestamp, atau economic ordering. Infrastruktur VPS/NTP/chrony yang lebih ketat tetap merupakan concern deployment lanjutan.
 
 ## Opportunity quality filter
 
@@ -245,11 +245,73 @@ Semua nilai dapat diinjeksi untuk test/replay dan bukan rekomendasi modal atau t
 
 Projected sell venue harus tetap menyisakan minimum BTC available reserve setelah seluruh reservation lama dan candidate baru diperhitungkan. Projected buy spend, termasuk taker fee, harus tetap menyisakan minimum USDT available reserve. Risk rejection terjadi sebelum order dibuat, tidak mengubah balance, memakai rejection `RISK_REJECTED`, dan menyimpan seluruh typed `riskReasons` yang berlaku.
 
-Session berubah dari `RUNNING` menjadi sticky `RISK_HALTED` jika cumulative realized paper PnL mencapai loss limit atau consecutive execution failure mencapai threshold. `FAILED`, `BUY_ONLY`, `SELL_ONLY`, dan `UNWIND_FAILED` menaikkan counter; `CLEAN_FILL` atau `UNWOUND` mereset counter hanya selama session belum halt. Halt tetap aktif sampai process/session restart dan hanya memblokir entry baru—existing order, timeout, dan emergency unwind tetap diproses.
+Session berubah dari `RUNNING` menjadi sticky `RISK_HALTED` jika cumulative realized paper PnL mencapai loss limit atau consecutive execution failure mencapai threshold. `FAILED`, `BUY_ONLY`, `SELL_ONLY`, `UNWIND_FAILED`, dan `FAILED_RECOVERY` menaikkan counter; `CLEAN_FILL` atau `UNWOUND` mereset counter hanya selama session belum halt. Mulai Phase 4.0, state halt ikut dipersist sehingga process restart tidak meresetnya secara diam-diam. Halt hanya memblokir entry baru—existing order, timeout, dan emergency unwind yang belum melewati recovery tetap diproses.
 
 Terminal menampilkan risk checks, rejection breakdown, current/max residual, failure streak, inventory available/reserved dan persentase BTC/USDT per venue. Rebalance suggestion memakai target sederhana 50/50 dengan tolerance 10%. Suggestion hanya diagnostik; engine tidak melakukan transfer virtual otomatis, transfer nyata, withdrawal, atau private exchange operation.
 
 Synthetic Phase 3.2 risk scenarios berada di `src/risk/paper-risk-manager.test.ts` dan integration halt/unwind berada di `src/paper/latency-engine.test.ts`; tidak ada threshold production yang diturunkan untuk membuat fixture lulus.
+
+### Phase 4.0 durable state dan crash recovery
+
+Live paper mode menyimpan state single-process lokal di bawah `DATA_DIR` (default `./data`):
+
+```text
+data/state/checkpoint.json
+data/state/journal.jsonl
+```
+
+Checkpoint memakai explicit DTO dengan `schemaVersion: 1`, `savedAt`, `lastAppliedJournalSeq`, dan `engineState`. State engine mencakup paper balances available/reserved, trade, internal order metadata dan reservation, fill, seen opportunity IDs, logical timestamp, cumulative risk state/counters, serta execution config yang diperlukan untuk restore. Class instance dan live order book tidak diserialisasi.
+
+Checkpoint ditulis ke `checkpoint.json.tmp`, di-`fsync`, ditutup, lalu di-rename secara atomik. Journal bersifat append-only, setiap record di-`fsync`, memiliki sequence strictly increasing, `recordedAt`, execution event, dan state snapshot tervalidasi. Checkpoint dibuat setiap 100 execution event, saat trade terminal, saat risk halt, dan pada graceful shutdown. Saat restart, hanya journal record dengan `seq > lastAppliedJournalSeq` yang diterapkan; duplicate/non-increasing sequence, unknown schema version, malformed JSON, duplicate entity ID, broken reference, nilai non-finite, saldo negatif, atau reservation mismatch membuat recovery fail closed.
+
+Reservation invariant membandingkan jumlah `reservedQuoteRemaining` seluruh BUY order dengan `usdtReserved` venue, dan `reservedBaseRemaining` seluruh SELL/unwind order dengan `btcReserved`. Mismatch tidak diperbaiki otomatis. Startup tetap hidup untuk diagnostics tetapi state operasional menjadi `DEGRADED` dan paper entry diblokir.
+
+Recovery tidak menganggap market book lama sebagai live truth. Semua pre-crash entry/unwind order yang masih aktif dibatalkan dan reservation dilepas tanpa membuat fill. Trade tanpa residual ditutup eksplisit sebagai `FAILED_RECOVERY`; residual BTC dipertahankan sebagai `RECOVERY_REQUIRED`. Baseline Phase 4.0 tidak melakukan automatic post-restart unwind atas residual tersebut. Book baru, source-clock warm-up, dan `SYNC_HEALTHY` wajib diperoleh dahulu; penanganan recovery exposure yang lebih otomatis tetap menjadi pekerjaan lanjutan.
+
+Operational state bergerak melalui:
+
+```text
+STARTING -> RECOVERING -> WARMING_UP -> RUNNING
+                              |          |
+                              +-> DEGRADED
+any state -> SHUTTING_DOWN
+```
+
+Entry baru hanya diterima pada `RUNNING`. State itu memerlukan public feed Bybit dan OKX connected, host clock sehat, `SYNC_HEALTHY` (termasuk kedua source clock `STABLE`), serta checkpoint dan journal sehat. Disk/journal failure memindahkan service ke `DEGRADED`; existing processing boleh menyelesaikan langkah aman, tetapi exposure baru tidak dibuka.
+
+Health server hanya bind ke `127.0.0.1` secara default:
+
+```text
+GET /live    200 selama process/event loop melayani request
+GET /health  200 dengan market, timing, persistence, dan paper health
+GET /ready   200 hanya saat operational state RUNNING; selain itu 503
+```
+
+Port default `8080` dapat diubah dengan `HEALTH_PORT`. `HEALTH_HOST` tersedia untuk konfigurasi eksplisit, tetapi default tidak mengekspos endpoint ke jaringan luar. Response tidak berisi credential, API key, raw balance account exchange, atau secret.
+
+Runtime configuration:
+
+```text
+DATA_DIR=./data
+LOG_LEVEL=INFO            # DEBUG | INFO | WARN | ERROR
+LOG_FORMAT=text           # text | json
+HEALTH_HOST=127.0.0.1
+HEALTH_PORT=8080
+```
+
+Structured logger ringan mendukung field `timestamp`, `level`, `component`, `event`, `message`, dan context opsional seperti trade/order/exchange ID tanpa dependency logging tambahan.
+
+Untuk long-running memory guard, seluruh percentile sample pada `OpportunityMetrics` memakai rolling window maksimum 10.000 sampel. Engine selalu mempertahankan seluruh active/recovery-required state, sedangkan terminal trade beserta order/fill terkait dibatasi ke 10.000 trade terbaru. Top-of-book state exchange sendiri tetap dibatasi depth 50. Counter opportunity/risk tetap cumulative, sementara percentile dan historical paper metrics setelah batas retention merepresentasikan rolling/recent history.
+
+Soak harness memutar dataset berulang kali tanpa WebSocket, memverifikasi digest deterministik, dan melaporkan RSS, heap, event count, serta active resources:
+
+```bash
+npm run soak
+SOAK_ITERATIONS=10 npm run soak
+SOAK_DATASET=fixtures/paper-qualified-orderbooks.jsonl npm run soak
+```
+
+Finite soak run hanya merupakan operational signal dan tidak membuktikan tidak adanya memory leak. Persistence ini masih single-process/local-disk, journal menyimpan state snapshot untuk deterministic recovery dan belum melakukan compaction, tidak menyediakan distributed locking/failover, dan belum memakai database atau remote observability.
 
 ## Raw market recording
 
@@ -381,7 +443,7 @@ Metrics hanya menghitung completed event dengan state final `DISAPPEARED`:
 
 Field `everActive` dan `everInvalidSync` disimpan pada setiap snapshot dan dibawa sampai final event; history tidak ditebak dari final state. Percentile menggunakan metode **nearest-rank** pada lifetime yang diurutkan ascending: rank = `ceil(percentile / 100 * jumlah sample)`.
 
-Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Comparison count tidak dicampur dengan completed-event count. Metrics masih in-memory dan reset saat aplikasi restart. Nilai net berasal dari simulasi multi-level depth dan tetap bukan realized profit.
+Summary metrics dicetak setiap 60 detik dan aman saat belum ada completed event. Comparison count tidak dicampur dengan completed-event count. Opportunity-metrics window masih in-memory dan reset saat aplikasi restart; paper balance, execution state, serta risk state dipersist terpisah. Nilai net berasal dari simulasi multi-level depth dan tetap bukan realized profit.
 
 ## Requirements
 
@@ -448,8 +510,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 3.0 idealized atomic paper engine: complete/compatibility.
 - Phase 3.1 execution latency, partial fill, dan leg-risk simulation: complete.
 - Phase 3.1.1 fresh-book unwind guard: complete.
-- Phase 3.2 inventory, rebalancing suggestion, dan risk limits: complete/current.
+- Phase 3.2 inventory, rebalancing suggestion, dan risk limits: complete.
+- Phase 4.0 durable state, crash recovery, dan operational hardening: complete/current.
 
-## Scope Phase 3.2
+## Scope Phase 4.0
 
-Scope versi ini menambahkan projected inventory checks, direction-aware imbalance/exposure guards, open-trade limit, session loss/failure circuit breakers, venue allocation metrics, dan informational rebalance suggestion di atas deterministic paper execution. Tidak ada real order execution, automatic transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan durable local checkpoint/journal, validated crash recovery, startup/readiness gating, structured logging, health endpoint localhost, graceful persistence shutdown, dan bounded in-memory histories di atas deterministic paper execution. Tidak ada real order execution, automatic transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.

@@ -11,6 +11,7 @@ export interface LatencyPaperCoordinatorOptions {
   engine: LatencyPaperTradingEngine;
   recorder?: Pick<PaperExecutionRecorder, 'flush'>;
   onTradeTriggered?: (trade: LatencyPaperTrade) => void;
+  canAcceptEntry?: () => boolean;
 }
 
 export class LatencyPaperCoordinator {
@@ -22,6 +23,9 @@ export class LatencyPaperCoordinator {
     timestamp: number,
   ): LatencyPaperTrade | null {
     if (event.state !== 'QUALIFIED') {
+      return null;
+    }
+    if (this.options.canAcceptEntry?.() === false) {
       return null;
     }
     const comparisonIndex = snapshot.comparisons.findIndex(

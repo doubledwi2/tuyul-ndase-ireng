@@ -9,6 +9,7 @@ export type PaperTradeState =
   | 'FILLED'
   | 'UNHEDGED'
   | 'UNWINDING'
+  | 'RECOVERY_REQUIRED'
   | 'CLOSED'
   | 'REJECTED'
   | 'FAILED';
@@ -30,6 +31,7 @@ export type PaperTradeOutcome =
   | 'SELL_ONLY'
   | 'UNWOUND'
   | 'UNWIND_FAILED'
+  | 'FAILED_RECOVERY'
   | 'TIMEOUT_NO_FILL'
   | 'REJECTED_PRETRADE';
 

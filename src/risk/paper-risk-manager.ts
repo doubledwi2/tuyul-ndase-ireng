@@ -99,6 +99,50 @@ export interface PaperRiskSummary {
   metrics: PaperRiskMetrics;
 }
 
+export interface PaperRiskManagerState {
+  sessionRiskState: SessionRiskState;
+  haltReasons: RiskReason[];
+  observedTerminalTradeIds: string[];
+  riskChecks: number;
+  riskAllowed: number;
+  riskRejected: number;
+  rejectedMaxTotalBtcExposure: number;
+  rejectedLowBtcReserve: number;
+  rejectedLowUsdtReserve: number;
+  rejectedVenueImbalance: number;
+  rejectedOpenTradeLimit: number;
+  rejectedExposureLimit: number;
+  rejectedSessionLoss: number;
+  rejectedFailureCircuitBreaker: number;
+  consecutiveFailures: number;
+  maxConsecutiveFailures: number;
+  sessionRealizedPnlUsdt: number;
+  maxObservedGlobalUnhedgedBtc: number;
+}
+
+const RISK_REASONS: readonly RiskReason[] = [
+  'MAX_TOTAL_BTC_EXPOSURE',
+  'VENUE_BTC_IMBALANCE',
+  'LOW_BTC_RESERVE',
+  'LOW_USDT_RESERVE',
+  'MAX_OPEN_TRADES',
+  'MAX_UNHEDGED_EXPOSURE',
+  'SESSION_LOSS_LIMIT',
+  'CONSECUTIVE_FAILURE_LIMIT',
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function finiteNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function totalBtc(balance: Readonly<PaperBalance>): number {
   return balance.btcAvailable + balance.btcReserved;
 }
@@ -120,9 +164,11 @@ function addReason(reasons: RiskReason[], reason: RiskReason): void {
 function isExecutionFailure(trade: PaperRiskTradeSnapshot): boolean {
   return (
     trade.state === 'FAILED' ||
+    trade.state === 'RECOVERY_REQUIRED' ||
     trade.outcome === 'BUY_ONLY' ||
     trade.outcome === 'SELL_ONLY' ||
-    trade.outcome === 'UNWIND_FAILED'
+    trade.outcome === 'UNWIND_FAILED' ||
+    trade.outcome === 'FAILED_RECOVERY'
   );
 }
 
@@ -154,6 +200,118 @@ export class PaperRiskManager {
   constructor(config: PaperRiskConfig = PAPER_RISK_CONFIG) {
     validatePaperRiskConfig(config);
     this.config = { ...config };
+  }
+
+  getConfig(): PaperRiskConfig {
+    return { ...this.config };
+  }
+
+  exportState(): PaperRiskManagerState {
+    return {
+      sessionRiskState: this.state,
+      haltReasons: [...this.haltReasons],
+      observedTerminalTradeIds: [...this.observedTerminalTradeIds],
+      riskChecks: this.riskChecks,
+      riskAllowed: this.riskAllowed,
+      riskRejected: this.riskRejected,
+      rejectedMaxTotalBtcExposure: this.rejectedMaxTotalBtcExposure,
+      rejectedLowBtcReserve: this.rejectedLowBtcReserve,
+      rejectedLowUsdtReserve: this.rejectedLowUsdtReserve,
+      rejectedVenueImbalance: this.rejectedVenueImbalance,
+      rejectedOpenTradeLimit: this.rejectedOpenTradeLimit,
+      rejectedExposureLimit: this.rejectedExposureLimit,
+      rejectedSessionLoss: this.rejectedSessionLoss,
+      rejectedFailureCircuitBreaker: this.rejectedFailureCircuitBreaker,
+      consecutiveFailures: this.consecutiveFailures,
+      maxConsecutiveFailures: this.maxConsecutiveFailures,
+      sessionRealizedPnlUsdt: this.sessionRealizedPnlUsdt,
+      maxObservedGlobalUnhedgedBtc: this.maxObservedGlobalUnhedgedBtc,
+    };
+  }
+
+  restoreState(value: unknown): void {
+    if (!isRecord(value)) {
+      throw new Error('Invalid paper risk state: expected an object.');
+    }
+    const state = value as Partial<PaperRiskManagerState>;
+    if (
+      state.sessionRiskState !== 'RUNNING' &&
+      state.sessionRiskState !== 'RISK_HALTED'
+    ) {
+      throw new Error('Invalid paper risk state: unknown session state.');
+    }
+    if (
+      !Array.isArray(state.haltReasons) ||
+      !state.haltReasons.every((reason) => RISK_REASONS.includes(reason))
+    ) {
+      throw new Error('Invalid paper risk state: unknown halt reason.');
+    }
+    if (
+      !Array.isArray(state.observedTerminalTradeIds) ||
+      !state.observedTerminalTradeIds.every(
+        (id) => typeof id === 'string' && id.length > 0,
+      ) ||
+      new Set(state.observedTerminalTradeIds).size !==
+        state.observedTerminalTradeIds.length
+    ) {
+      throw new Error('Invalid paper risk state: terminal trade IDs.');
+    }
+    const counters: Array<keyof PaperRiskManagerState> = [
+      'riskChecks',
+      'riskAllowed',
+      'riskRejected',
+      'rejectedMaxTotalBtcExposure',
+      'rejectedLowBtcReserve',
+      'rejectedLowUsdtReserve',
+      'rejectedVenueImbalance',
+      'rejectedOpenTradeLimit',
+      'rejectedExposureLimit',
+      'rejectedSessionLoss',
+      'rejectedFailureCircuitBreaker',
+      'consecutiveFailures',
+      'maxConsecutiveFailures',
+    ];
+    for (const key of counters) {
+      if (!finiteNonNegativeInteger(state[key])) {
+        throw new Error(`Invalid paper risk state counter: ${key}.`);
+      }
+    }
+    if (
+      !finiteNumber(state.sessionRealizedPnlUsdt) ||
+      !finiteNumber(state.maxObservedGlobalUnhedgedBtc) ||
+      state.maxObservedGlobalUnhedgedBtc < 0
+    ) {
+      throw new Error('Invalid paper risk state numeric value.');
+    }
+
+    const restored = state as PaperRiskManagerState;
+    this.state = restored.sessionRiskState;
+    this.haltReasons.splice(
+      0,
+      this.haltReasons.length,
+      ...restored.haltReasons,
+    );
+    this.observedTerminalTradeIds.clear();
+    for (const id of restored.observedTerminalTradeIds) {
+      this.observedTerminalTradeIds.add(id);
+    }
+    this.riskChecks = restored.riskChecks;
+    this.riskAllowed = restored.riskAllowed;
+    this.riskRejected = restored.riskRejected;
+    this.rejectedMaxTotalBtcExposure = restored.rejectedMaxTotalBtcExposure;
+    this.rejectedLowBtcReserve = restored.rejectedLowBtcReserve;
+    this.rejectedLowUsdtReserve = restored.rejectedLowUsdtReserve;
+    this.rejectedVenueImbalance = restored.rejectedVenueImbalance;
+    this.rejectedOpenTradeLimit = restored.rejectedOpenTradeLimit;
+    this.rejectedExposureLimit = restored.rejectedExposureLimit;
+    this.rejectedSessionLoss = restored.rejectedSessionLoss;
+    this.rejectedFailureCircuitBreaker =
+      restored.rejectedFailureCircuitBreaker;
+    this.consecutiveFailures = restored.consecutiveFailures;
+    this.maxConsecutiveFailures = restored.maxConsecutiveFailures;
+    this.sessionRealizedPnlUsdt = restored.sessionRealizedPnlUsdt;
+    this.maxObservedGlobalUnhedgedBtc =
+      restored.maxObservedGlobalUnhedgedBtc;
   }
 
   assess(input: PaperRiskAssessmentInput): RiskDecision {
@@ -382,7 +540,7 @@ export class PaperRiskManager {
       .filter(
         (trade) =>
           trade.closedAt === null ||
-          (trade.state === 'FAILED' &&
+          ((trade.state === 'FAILED' || trade.state === 'RECOVERY_REQUIRED') &&
             Math.abs(trade.residualBaseExposure) > PAPER_BALANCE_EPSILON),
       )
       .reduce(
@@ -396,7 +554,8 @@ export class PaperRiskManager {
     for (const trade of input.trades) {
       if (
         trade.closedAt !== null &&
-        trade.state !== 'FAILED'
+        trade.state !== 'FAILED' &&
+        trade.state !== 'RECOVERY_REQUIRED'
       ) {
         continue;
       }

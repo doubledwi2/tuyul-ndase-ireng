@@ -34,3 +34,5 @@ export type QuoteHandler = (quote: BestQuote) => void;
 export interface ExchangeConnection {
   close: () => void;
 }
+
+export type ExchangeStatusHandler = (connected: boolean) => void;

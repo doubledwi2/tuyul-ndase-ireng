@@ -6,6 +6,7 @@ import type {
   OrderBookConnection,
   OrderBookHandler,
 } from '../types/orderbook.js';
+import type { ExchangeStatusHandler } from '../types/market.js';
 import {
   applyLevelUpdates,
   isRecord,
@@ -83,7 +84,10 @@ export class BybitOrderBookState {
   }
 }
 
-export function connectBybit(onOrderBook: OrderBookHandler): OrderBookConnection {
+export function connectBybit(
+  onOrderBook: OrderBookHandler,
+  onStatus?: ExchangeStatusHandler,
+): OrderBookConnection {
   let socket: WebSocket | null = null;
   let heartbeat: NodeJS.Timeout | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
@@ -114,6 +118,7 @@ export function connectBybit(onOrderBook: OrderBookHandler): OrderBookConnection
       socket = new WebSocket(URL);
       socket.on('open', () => {
         console.log('[BYBIT] Connected');
+        onStatus?.(true);
         socket?.send(
           JSON.stringify({ op: 'subscribe', args: [BYBIT_ORDERBOOK_TOPIC] }),
         );
@@ -139,6 +144,7 @@ export function connectBybit(onOrderBook: OrderBookHandler): OrderBookConnection
         console.error(`[BYBIT] WebSocket error: ${error.message}`);
       });
       socket.on('close', () => {
+        onStatus?.(false);
         clearHeartbeat();
         socket = null;
         scheduleReconnect();
@@ -153,6 +159,7 @@ export function connectBybit(onOrderBook: OrderBookHandler): OrderBookConnection
   return {
     close: () => {
       stopped = true;
+      onStatus?.(false);
       clearHeartbeat();
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer);

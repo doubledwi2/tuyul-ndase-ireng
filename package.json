@@ -1,8 +1,8 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
-  "description": "BTC/USDT scanner with inventory-aware virtual paper execution",
+  "description": "BTC/USDT scanner with durable virtual paper execution",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -10,9 +10,10 @@
     "replay:book": "tsx src/replay-book.ts",
     "replay:paper": "tsx src/replay-paper.ts",
     "paper": "tsx src/paper.ts",
+    "soak": "npm run build && node --expose-gc dist/soak.js",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts src/risk/*.test.ts src/paper/*.test.ts",
+    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts src/risk/*.test.ts src/persistence/*.test.ts src/operations/*.test.ts src/paper/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

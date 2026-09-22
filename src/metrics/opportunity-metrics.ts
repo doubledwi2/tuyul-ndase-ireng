@@ -3,6 +3,7 @@ import type { DepthComparison } from '../scanner/depth-comparator.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import type { NormalizedOrderBook } from '../types/orderbook.js';
 import type { SyncAssessment } from '../timing/sync-model.js';
+import { MAX_METRIC_SAMPLES } from '../config/runtime.js';
 
 export interface OpportunityMetricsSummary {
   comparisonsTotal: number;
@@ -166,6 +167,19 @@ export class OpportunityMetrics {
   private readonly peakNetPnls: number[] = [];
   private readonly peakSizes: number[] = [];
 
+  constructor(private readonly maxSamples = MAX_METRIC_SAMPLES) {
+    if (!Number.isInteger(maxSamples) || maxSamples <= 0) {
+      throw new RangeError('Metric sample limit must be a positive integer.');
+    }
+  }
+
+  private pushSample(samples: number[], value: number): void {
+    samples.push(value);
+    if (samples.length > this.maxSamples) {
+      samples.splice(0, samples.length - this.maxSamples);
+    }
+  }
+
   recordComparison(
     comparison: DepthComparison,
     qualification?: OpportunityQualification,
@@ -180,10 +194,16 @@ export class OpportunityMetrics {
       this.executableNetNonPositiveCount += 1;
     }
     if (comparison.buyExecution.slippagePercent !== null) {
-      this.buySlippages.push(comparison.buyExecution.slippagePercent);
+      this.pushSample(
+        this.buySlippages,
+        comparison.buyExecution.slippagePercent,
+      );
     }
     if (comparison.sellExecution.slippagePercent !== null) {
-      this.sellSlippages.push(comparison.sellExecution.slippagePercent);
+      this.pushSample(
+        this.sellSlippages,
+        comparison.sellExecution.slippagePercent,
+      );
     }
     if (qualification === undefined) {
       return;
@@ -228,14 +248,17 @@ export class OpportunityMetrics {
     if (event.everQualified) {
       this.eventsEverQualified += 1;
       if (event.timeToQualifiedMs !== null) {
-        this.timesToQualified.push(event.timeToQualifiedMs);
+        this.pushSample(this.timesToQualified, event.timeToQualifiedMs);
       }
     }
-    this.lifetimes.push(event.lifetimeMs);
-    this.peakSpreads.push(event.peakGrossSpreadPercent);
-    this.peakNetSpreads.push(event.peakEstimatedNetSpreadPercent);
-    this.peakNetPnls.push(event.peakEstimatedNetPnlAbsolute);
-    this.peakSizes.push(event.peakTradableSize);
+    this.pushSample(this.lifetimes, event.lifetimeMs);
+    this.pushSample(this.peakSpreads, event.peakGrossSpreadPercent);
+    this.pushSample(
+      this.peakNetSpreads,
+      event.peakEstimatedNetSpreadPercent,
+    );
+    this.pushSample(this.peakNetPnls, event.peakEstimatedNetPnlAbsolute);
+    this.pushSample(this.peakSizes, event.peakTradableSize);
   }
 
   recordTiming(
@@ -244,20 +267,27 @@ export class OpportunityMetrics {
     updatedExchange: NormalizedOrderBook['exchange'],
   ): void {
     this.timingAssessmentsTotal += 1;
-    this.receiveSkews.push(assessment.receiveSkewMs);
-    this.maxBookAges.push(assessment.maxBookAgeMs);
+    this.pushSample(this.receiveSkews, assessment.receiveSkewMs);
+    this.pushSample(this.maxBookAges, assessment.maxBookAgeMs);
     if (assessment.sourceTimestampSkewMs !== null) {
-      this.sourceTimestampSkews.push(assessment.sourceTimestampSkewMs);
+      this.pushSample(
+        this.sourceTimestampSkews,
+        assessment.sourceTimestampSkewMs,
+      );
     }
     if (
       updatedExchange === 'bybit' &&
       assessment.bybitObservedIngressMs !== null
     ) {
-      this.bybitObservedIngress.push(assessment.bybitObservedIngressMs);
+      this.pushSample(
+        this.bybitObservedIngress,
+        assessment.bybitObservedIngressMs,
+      );
       this.bybitObservedIngressBaselineMs =
         assessment.bybitSourceClock.baselineObservedIngressMs;
       if (assessment.bybitSourceClock.observedIngressDeviationMs !== null) {
-        this.bybitAbsoluteOffsetDeviations.push(
+        this.pushSample(
+          this.bybitAbsoluteOffsetDeviations,
           Math.abs(assessment.bybitSourceClock.observedIngressDeviationMs),
         );
       }
@@ -266,17 +296,21 @@ export class OpportunityMetrics {
       updatedExchange === 'okx' &&
       assessment.okxObservedIngressMs !== null
     ) {
-      this.okxObservedIngress.push(assessment.okxObservedIngressMs);
+      this.pushSample(
+        this.okxObservedIngress,
+        assessment.okxObservedIngressMs,
+      );
       this.okxObservedIngressBaselineMs =
         assessment.okxSourceClock.baselineObservedIngressMs;
       if (assessment.okxSourceClock.observedIngressDeviationMs !== null) {
-        this.okxAbsoluteOffsetDeviations.push(
+        this.pushSample(
+          this.okxAbsoluteOffsetDeviations,
           Math.abs(assessment.okxSourceClock.observedIngressDeviationMs),
         );
       }
     }
     if (processingDurationMs !== null) {
-      this.processingDurations.push(processingDurationMs);
+      this.pushSample(this.processingDurations, processingDurationMs);
     }
     if (assessment.status === 'SYNC_HEALTHY') {
       this.syncHealthyCount += 1;

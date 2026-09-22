@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { FEES, type FeeConfig } from '../config/fees.js';
+import { MAX_PAPER_HISTORY } from '../config/runtime.js';
 import type { PaperRiskConfig } from '../config/risk.js';
 import {
   INITIAL_PAPER_BALANCES,
@@ -49,6 +50,11 @@ import type {
   PaperTradeOutcome,
   PaperTradeRejectionReason,
 } from './types.js';
+import {
+  validatePaperEngineState,
+  type PaperEngineState,
+  type PaperOrderCheckpoint,
+} from './state.js';
 
 export interface LatencyPaperExecutionInput {
   event: OpportunityEvent;
@@ -68,13 +74,10 @@ export interface LatencyPaperTradingEngineOptions {
   onExecutionEvent?: (event: PaperExecutionEvent) => void;
   riskConfig?: PaperRiskConfig;
   riskManager?: PaperRiskManager;
+  maxPaperHistory?: number;
 }
 
-interface InternalOrder extends PaperOrder {
-  deadlineAt: number;
-  reservedQuoteRemaining: number;
-  reservedBaseRemaining: number;
-}
+interface InternalOrder extends PaperOrderCheckpoint {}
 
 interface CachedBook {
   book: NormalizedOrderBook;
@@ -178,6 +181,7 @@ export class LatencyPaperTradingEngine {
     | ((event: PaperExecutionEvent) => void)
     | undefined;
   private readonly riskManager: PaperRiskManager;
+  private readonly maxPaperHistory: number;
   private readonly seenEventIds = new Set<string>();
   private readonly trades: LatencyPaperTrade[] = [];
   private readonly orders = new Map<string, InternalOrder>();
@@ -188,6 +192,7 @@ export class LatencyPaperTradingEngine {
   private readonly everBuyOnly = new Set<string>();
   private readonly everSellOnly = new Set<string>();
   private readonly unhedgedAccumulatedMs = new Map<string, number>();
+  private readonly recoveryRequiredTradeIds = new Set<string>();
   private referenceBtcPrice: number | null = null;
   private initialPortfolioValueUsdt: number | null = null;
   private lastLogicalTimestamp = 0;
@@ -213,6 +218,114 @@ export class LatencyPaperTradingEngine {
     this.onExecutionEvent = options.onExecutionEvent;
     this.riskManager =
       options.riskManager ?? new PaperRiskManager(options.riskConfig);
+    this.maxPaperHistory = options.maxPaperHistory ?? MAX_PAPER_HISTORY;
+    if (!Number.isInteger(this.maxPaperHistory) || this.maxPaperHistory <= 0) {
+      throw new RangeError('Paper history limit must be a positive integer.');
+    }
+  }
+
+  static fromState(
+    value: unknown,
+    options: LatencyPaperTradingEngineOptions = {},
+  ): LatencyPaperTradingEngine {
+    validatePaperEngineState(value);
+    const riskManager =
+      options.riskManager ?? new PaperRiskManager(value.riskConfig);
+    riskManager.restoreState(value.riskState);
+    const engine = new LatencyPaperTradingEngine({
+      ...options,
+      initialBalances: value.initialBalances,
+      fees: value.fees,
+      executionConfig: value.executionConfig,
+      riskConfig: value.riskConfig,
+      riskManager,
+      maxTriggerAgeMs: value.maxTriggerAgeMs,
+      maxPaperHistory: value.maxPaperHistory,
+    });
+    engine.balances = clonePaperBalances(value.balances);
+    engine.trades.push(...value.trades.map(cloneTrade));
+    for (const order of value.orders) {
+      engine.orders.set(order.id, { ...order });
+    }
+    engine.fills.push(...value.fills.map((fill) => ({ ...fill })));
+    for (const id of value.seenEventIds) engine.seenEventIds.add(id);
+    for (const id of value.everUnhedgedTradeIds) engine.everUnhedged.add(id);
+    for (const id of value.everBuyOnlyTradeIds) engine.everBuyOnly.add(id);
+    for (const id of value.everSellOnlyTradeIds) engine.everSellOnly.add(id);
+    for (const id of value.recoveryRequiredTradeIds) {
+      engine.recoveryRequiredTradeIds.add(id);
+    }
+    for (const [id, duration] of value.unhedgedAccumulatedMs) {
+      engine.unhedgedAccumulatedMs.set(id, duration);
+    }
+    engine.referenceBtcPrice = value.referenceBtcPrice;
+    engine.initialPortfolioValueUsdt = value.initialPortfolioValueUsdt;
+    engine.lastLogicalTimestamp = value.lastLogicalTimestamp;
+    return engine;
+  }
+
+  exportState(): PaperEngineState {
+    return {
+      balances: clonePaperBalances(this.balances),
+      initialBalances: clonePaperBalances(this.initialBalances),
+      trades: this.trades.map(cloneTrade),
+      orders: this.ordersArray().map((order) => ({ ...order })),
+      fills: this.fills.map((fill) => ({ ...fill })),
+      seenEventIds: [...this.seenEventIds],
+      everUnhedgedTradeIds: [...this.everUnhedged],
+      everBuyOnlyTradeIds: [...this.everBuyOnly],
+      everSellOnlyTradeIds: [...this.everSellOnly],
+      recoveryRequiredTradeIds: [...this.recoveryRequiredTradeIds],
+      unhedgedAccumulatedMs: [...this.unhedgedAccumulatedMs.entries()],
+      referenceBtcPrice: this.referenceBtcPrice,
+      initialPortfolioValueUsdt: this.initialPortfolioValueUsdt,
+      lastLogicalTimestamp: this.lastLogicalTimestamp,
+      fees: {
+        bybit: { ...this.fees.bybit },
+        okx: { ...this.fees.okx },
+      },
+      executionConfig: { ...this.config },
+      riskConfig: this.riskManager.getConfig(),
+      maxTriggerAgeMs: this.maxTriggerAgeMs,
+      maxPaperHistory: this.maxPaperHistory,
+      riskState: this.riskManager.exportState(),
+    };
+  }
+
+  applyRecoveryPolicy(timestamp = Date.now()): void {
+    if (!Number.isFinite(timestamp) || timestamp < 0) {
+      throw new RangeError('Recovery timestamp must be finite and non-negative.');
+    }
+    const recoveryTimestamp = Math.max(timestamp, this.lastLogicalTimestamp);
+    this.lastLogicalTimestamp = recoveryTimestamp;
+    for (const order of this.orders.values()) {
+      if (terminal(order)) {
+        continue;
+      }
+      order.state = 'CANCELLED';
+      order.completedAt = recoveryTimestamp;
+      this.releaseOrderReservation(order);
+      this.emitOrder(order, recoveryTimestamp);
+    }
+    for (const trade of this.trades) {
+      if (trade.closedAt !== null || trade.state === 'REJECTED') {
+        continue;
+      }
+      trade.outcome = 'FAILED_RECOVERY';
+      if (Math.abs(trade.residualBaseExposure) > PAPER_BALANCE_EPSILON) {
+        trade.state = 'RECOVERY_REQUIRED';
+        trade.unhedgedSince ??= recoveryTimestamp;
+        this.recoveryRequiredTradeIds.add(trade.id);
+      } else {
+        trade.state = 'FAILED';
+        trade.closedAt = recoveryTimestamp;
+        this.riskManager.observeTerminalTrade(trade);
+      }
+      this.emitTrade(trade, recoveryTimestamp);
+    }
+    this.riskManager.observeExposure(this.trades);
+    validatePaperEngineState(this.exportState());
+    this.pruneHistory();
   }
 
   triggerOpportunity(input: LatencyPaperExecutionInput): LatencyPaperTrade {
@@ -375,6 +488,7 @@ export class LatencyPaperTradingEngine {
     this.expireOrders(logicalTimestamp);
     this.refreshAndMaybeUnwind(logicalTimestamp);
     this.riskManager.observeExposure(this.trades);
+    this.pruneHistory();
   }
 
   finish(): void {
@@ -417,6 +531,7 @@ export class LatencyPaperTradingEngine {
       this.closeTrade(trade, outcome, 'FAILED', finalTimestamp);
     }
     this.riskManager.observeExposure(this.trades);
+    this.pruneHistory();
   }
 
   getBalances(): PaperBalances {
@@ -577,7 +692,7 @@ export class LatencyPaperTradingEngine {
     timestamp: number,
   ): LatencyPaperTrade {
     return {
-      id: this.idGenerator(),
+      id: this.nextUniqueId(),
       opportunityEventId: event.id,
       symbol: event.symbol,
       buyExchange: event.buyExchange,
@@ -637,7 +752,7 @@ export class LatencyPaperTradingEngine {
     isUnwind: boolean,
   ): InternalOrder {
     return {
-      id: this.idGenerator(),
+      id: this.nextUniqueId(),
       tradeId: trade.id,
       exchange,
       side,
@@ -670,6 +785,7 @@ export class LatencyPaperTradingEngine {
     trade.closedAt = timestamp;
     this.trades.push(trade);
     this.emitTrade(trade, timestamp);
+    this.pruneHistory();
     return cloneTrade(trade);
   }
 
@@ -782,7 +898,7 @@ export class LatencyPaperTradingEngine {
     order.fee += fee;
     order.averageFillPrice = order.notional / order.filledSize;
     const fill: PaperFill = {
-      id: this.idGenerator(),
+      id: this.nextUniqueId(),
       orderId: order.id,
       tradeId: order.tradeId,
       exchange: order.exchange,
@@ -830,6 +946,9 @@ export class LatencyPaperTradingEngine {
   private refreshAndMaybeUnwind(timestamp: number): void {
     for (const trade of this.trades) {
       if (trade.closedAt !== null || trade.state === 'REJECTED') {
+        continue;
+      }
+      if (this.recoveryRequiredTradeIds.has(trade.id)) {
         continue;
       }
       if (trade.unwindOrderId !== null) {
@@ -1242,6 +1361,59 @@ export class LatencyPaperTradingEngine {
     return this.ordersArray().filter(
       (order) => order.side === side && !order.isUnwind,
     );
+  }
+
+  private nextUniqueId(): string {
+    for (let attempt = 0; attempt < 10_000; attempt += 1) {
+      const candidate = this.idGenerator();
+      if (
+        candidate.length > 0 &&
+        !this.orders.has(candidate) &&
+        !this.trades.some((trade) => trade.id === candidate) &&
+        !this.fills.some((fill) => fill.id === candidate)
+      ) {
+        return candidate;
+      }
+    }
+    throw new Error('Paper ID generator could not produce a unique ID.');
+  }
+
+  private pruneHistory(): void {
+    const removable = this.trades.filter(
+      (trade) =>
+        trade.closedAt !== null &&
+        Math.abs(trade.residualBaseExposure) <= PAPER_BALANCE_EPSILON,
+    );
+    const excess = removable.length - this.maxPaperHistory;
+    if (excess <= 0) {
+      return;
+    }
+    const removed = new Set(
+      removable.slice(0, excess).map((trade) => trade.id),
+    );
+    for (let index = this.trades.length - 1; index >= 0; index -= 1) {
+      const trade = this.trades[index];
+      if (trade !== undefined && removed.has(trade.id)) {
+        this.seenEventIds.delete(trade.opportunityEventId);
+        this.everUnhedged.delete(trade.id);
+        this.everBuyOnly.delete(trade.id);
+        this.everSellOnly.delete(trade.id);
+        this.recoveryRequiredTradeIds.delete(trade.id);
+        this.unhedgedAccumulatedMs.delete(trade.id);
+        this.trades.splice(index, 1);
+      }
+    }
+    for (const [orderId, order] of this.orders) {
+      if (removed.has(order.tradeId)) {
+        this.orders.delete(orderId);
+      }
+    }
+    for (let index = this.fills.length - 1; index >= 0; index -= 1) {
+      const fill = this.fills[index];
+      if (fill !== undefined && removed.has(fill.tradeId)) {
+        this.fills.splice(index, 1);
+      }
+    }
   }
 
   private emitTrade(trade: LatencyPaperTrade, timestamp: number): void {

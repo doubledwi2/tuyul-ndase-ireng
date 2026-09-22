@@ -178,6 +178,19 @@ test('empty metrics are zero and null safe', () => {
   assert.equal(summary.sourceClockUnavailableCount, 0);
 });
 
+test('percentile sample arrays use a bounded rolling window', () => {
+  const metrics = new OpportunityMetrics(2);
+  metrics.recordCompleted(completedEvent({ id: 'old', lifetimeMs: 1 }));
+  metrics.recordCompleted(completedEvent({ id: 'middle', lifetimeMs: 2 }));
+  metrics.recordCompleted(completedEvent({ id: 'new', lifetimeMs: 100 }));
+
+  const summary = metrics.getSummary();
+  assert.equal(summary.totalCompletedEvents, 3);
+  assert.equal(summary.averageLifetimeMs, 51);
+  assert.equal(summary.minLifetimeMs, 2);
+  assert.equal(summary.maxLifetimeMs, 100);
+});
+
 test('counts completed events and ignores incomplete events', () => {
   const metrics = new OpportunityMetrics();
   metrics.recordCompleted(completedEvent());

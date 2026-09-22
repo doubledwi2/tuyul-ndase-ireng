@@ -15,9 +15,10 @@ function defaultErrorHandler(error: unknown): void {
 export function createLivePaperEventPath(
   timestamp = Date.now(),
   id: string = randomUUID(),
+  dataDir = 'data',
 ): string {
   return join(
-    'data',
+    dataDir,
     'paper',
     `live-${timestamp}-${id.slice(0, 8)}`,
     'paper-events.jsonl',
@@ -27,9 +28,10 @@ export function createLivePaperEventPath(
 export function createReplayPaperEventPath(
   timestamp = Date.now(),
   id: string = randomUUID(),
+  dataDir = 'data',
 ): string {
   return join(
-    'data',
+    dataDir,
     'replays',
     `paper-${timestamp}-${id.slice(0, 8)}`,
     'paper-events.jsonl',
