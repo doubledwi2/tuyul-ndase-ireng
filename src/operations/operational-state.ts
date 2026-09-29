@@ -1,6 +1,7 @@
 import type { PaperRiskSummary, SessionRiskState } from '../risk/paper-risk-manager.js';
 import type { ClockHealthStatus } from '../timing/clock-health.js';
 import type { SyncStatus } from '../timing/sync-model.js';
+import { MAX_FEED_SILENCE_MS } from '../config/runtime.js';
 
 export type OperationalState =
   | 'STARTING'
@@ -11,6 +12,9 @@ export type OperationalState =
   | 'SHUTTING_DOWN';
 
 export interface ServiceHealth {
+  version?: string;
+  uptimeSec?: number;
+  readinessReasons?: ReadinessReason[];
   market: { bybitConnected: boolean; okxConnected: boolean };
   timing: {
     syncStatus: SyncStatus | null;
@@ -28,6 +32,7 @@ export interface ServiceHealth {
     residualExposure: number;
   };
 }
+export type ReadinessReason = 'MARKET_DISCONNECTED' | 'FEED_SILENT' | 'TIMING_UNHEALTHY' | 'PERSISTENCE_UNHEALTHY' | 'RECOVERING' | 'SHUTTING_DOWN';
 
 export class OperationalStateManager {
   private state: OperationalState = 'STARTING';
@@ -38,6 +43,29 @@ export class OperationalStateManager {
   private checkpointHealthy = true;
   private journalHealthy = true;
   private lastCheckpointAt: number | null = null;
+  private recoveryFailed = false;
+  readonly heartbeat: Record<'lastBybitBookAt' | 'lastOkxBookAt' | 'lastComparisonAt' | 'lastExecutionEventAt', number | null> = {
+    lastBybitBookAt: null, lastOkxBookAt: null, lastComparisonAt: null, lastExecutionEventAt: null,
+  };
+  constructor(private readonly now: () => number = Date.now, private readonly maxSilence = MAX_FEED_SILENCE_MS) {}
+  observeBook(exchange: 'bybit' | 'okx', at = this.now()): void {
+    this.heartbeat[exchange === 'bybit' ? 'lastBybitBookAt' : 'lastOkxBookAt'] = at;
+    this.refreshState();
+  }
+  feedSilent(): boolean {
+    return [this.heartbeat.lastBybitBookAt, this.heartbeat.lastOkxBookAt]
+      .some(at => at === null || this.now() - at > this.maxSilence || this.now() < at);
+  }
+  reasons(): ReadinessReason[] {
+    const reasons: ReadinessReason[] = [];
+    if (this.state === 'STARTING' || this.state === 'RECOVERING' || this.recoveryFailed) reasons.push('RECOVERING');
+    if (this.state === 'SHUTTING_DOWN') reasons.push('SHUTTING_DOWN');
+    if (!this.bybitConnected || !this.okxConnected) reasons.push('MARKET_DISCONNECTED');
+    if (this.feedSilent()) reasons.push('FEED_SILENT');
+    if (this.syncStatus !== 'SYNC_HEALTHY' || this.clockHealth !== 'HEALTHY') reasons.push('TIMING_UNHEALTHY');
+    if (!this.checkpointHealthy || !this.journalHealthy) reasons.push('PERSISTENCE_UNHEALTHY');
+    return reasons;
+  }
 
   beginRecovery(): void {
     this.state = 'RECOVERING';
@@ -51,6 +79,7 @@ export class OperationalStateManager {
   }
 
   failRecovery(): void {
+    this.recoveryFailed = true;
     this.state = 'DEGRADED';
   }
 
@@ -59,6 +88,7 @@ export class OperationalStateManager {
   }
 
   setFeedConnected(exchange: 'bybit' | 'okx', connected: boolean): void {
+    if (!connected) this.heartbeat[exchange === 'bybit' ? 'lastBybitBookAt' : 'lastOkxBookAt'] = null;
     if (exchange === 'bybit') {
       this.bybitConnected = connected;
     } else {
@@ -85,15 +115,19 @@ export class OperationalStateManager {
   }
 
   canAcceptPaperEntry(): boolean {
+    this.refreshState();
     return this.state === 'RUNNING';
   }
 
   getState(): OperationalState {
+    this.refreshState();
     return this.state;
   }
 
   getHealth(risk: PaperRiskSummary): ServiceHealth {
+    this.refreshState();
     return {
+      version: '0.4.1', uptimeSec: process.uptime(), readinessReasons: this.reasons(),
       market: {
         bybitConnected: this.bybitConnected,
         okxConnected: this.okxConnected,
@@ -124,13 +158,14 @@ export class OperationalStateManager {
     ) {
       return;
     }
-    if (!this.checkpointHealthy || !this.journalHealthy) {
+    if (this.recoveryFailed || !this.checkpointHealthy || !this.journalHealthy) {
       this.state = 'DEGRADED';
       return;
     }
     this.state =
       this.bybitConnected &&
       this.okxConnected &&
+      !this.feedSilent() &&
       this.syncStatus === 'SYNC_HEALTHY' &&
       this.clockHealth === 'HEALTHY'
         ? 'RUNNING'

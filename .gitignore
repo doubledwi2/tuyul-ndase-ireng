@@ -8,3 +8,4 @@ dist/
 data/*.jsonl
 data/**/*.jsonl
 data/state/
+data/backups/

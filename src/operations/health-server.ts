@@ -6,6 +6,7 @@ export interface HealthServerOptions {
   host: string;
   port: number;
   getHealth: () => ServiceHealth;
+  getMetrics?: () => Record<string, unknown>;
 }
 
 export interface HealthServer {
@@ -22,6 +23,7 @@ function ready(health: ServiceHealth): boolean {
     health.timing.clockHealth === 'HEALTHY' &&
     health.persistence.checkpointHealthy &&
     health.persistence.journalHealthy
+    && (health.readinessReasons?.length ?? 0) === 0
   );
 }
 
@@ -48,7 +50,7 @@ export function getHealthHttpResponse(
     const isReady = ready(health);
     return {
       statusCode: isReady ? 200 : 503,
-      body: { status: isReady ? 'ready' : 'not_ready' },
+      body: { status: isReady ? 'ready' : 'not_ready', reasons: health.readinessReasons ?? [] },
     };
   }
   return { statusCode: 404, body: { status: 'not_found' } };
@@ -63,6 +65,11 @@ export async function startHealthServer(
     if (request.method === 'GET' && request.url === '/live') {
       response.statusCode = 200;
       response.end(JSON.stringify({ status: 'live' }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/metrics') {
+      response.statusCode = 200;
+      response.end(JSON.stringify(options.getMetrics?.() ?? {}));
       return;
     }
     const health = options.getHealth();

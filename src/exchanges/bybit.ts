@@ -1,5 +1,7 @@
 import WebSocket from 'ws';
 import { performance } from 'node:perf_hooks';
+import { Logger } from '../operations/logger.js';
+const logger = new Logger('bybit');
 
 import type {
   NormalizedOrderBook,
@@ -44,7 +46,7 @@ export class BybitOrderBookState {
     if (message.op === 'subscribe' && message.success === false) {
       const reason =
         typeof message.ret_msg === 'string' ? message.ret_msg : 'unknown reason';
-      console.error(`[BYBIT] Subscription rejected: ${reason}`);
+      logger.error('subscription_rejected', reason);
       return null;
     }
     if (
@@ -103,7 +105,7 @@ export function connectBybit(
     if (stopped || reconnectTimer !== null) {
       return;
     }
-    console.error(`[BYBIT] Disconnected; reconnecting in ${RECONNECT_DELAY_MS / 1_000}s`);
+    logger.warn('reconnecting', 'Disconnected; reconnect scheduled.', { delayMs: RECONNECT_DELAY_MS });
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
@@ -117,7 +119,7 @@ export function connectBybit(
     try {
       socket = new WebSocket(URL);
       socket.on('open', () => {
-        console.log('[BYBIT] Connected');
+        logger.info('connected', 'Public WebSocket connected.');
         onStatus?.(true);
         socket?.send(
           JSON.stringify({ op: 'subscribe', args: [BYBIT_ORDERBOOK_TOPIC] }),
@@ -141,7 +143,7 @@ export function connectBybit(
         }
       });
       socket.on('error', (error) => {
-        console.error(`[BYBIT] WebSocket error: ${error.message}`);
+        logger.error('websocket_error', error.message);
       });
       socket.on('close', () => {
         onStatus?.(false);
@@ -151,7 +153,7 @@ export function connectBybit(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[BYBIT] Connection error: ${message}`);
+      logger.error('connection_error', message);
       scheduleReconnect();
     }
   };

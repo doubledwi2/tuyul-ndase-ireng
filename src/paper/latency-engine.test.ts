@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { DurablePaperStateStore } from '../persistence/durable-paper-state.js';
 
 import {
   INITIAL_PAPER_BALANCES,
@@ -580,3 +584,36 @@ test('terminal in-memory paper history is bounded', () => {
   assert.equal(paperEngine.getTrades().length, 1);
   assert.equal(paperEngine.getTrades()[0]?.opportunityEventId, 'new');
 });
+
+for (const scenario of ['filled', 'pending', 'residual'] as const) {
+  test(`durable restart loop with ${scenario} trade has no accounting or risk drift`, async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'tuyul-restart-'));
+    try {
+      let paperEngine = engine({ config: { maxUnhedgedDurationMs: 1000 } });
+      trigger(paperEngine);
+      if (scenario !== 'pending') paperEngine.processOrderBook(book('bybit', 1050, 99, 100), 1050);
+      if (scenario === 'filled') paperEngine.processOrderBook(book('okx', 1050, 103, 104), 1050);
+      let opened = await DurablePaperStateStore.open({ dataDir });
+      opened.store.attachStateProvider(() => paperEngine.exportState());
+      await opened.store.checkpoint();
+      let baseline: ReturnType<LatencyPaperTradingEngine['exportState']> | null = null;
+      for (let i = 0; i < 5; i++) {
+        opened = await DurablePaperStateStore.open({ dataDir, checkpointEveryEvents: 1, compactAfterRecords: 1 });
+        assert.ok(opened.recoveredState);
+        paperEngine = LatencyPaperTradingEngine.fromState(opened.recoveredState, {
+          onExecutionEvent: event => { void opened.store.record(event); },
+        });
+        opened.store.attachStateProvider(() => paperEngine.exportState());
+        paperEngine.applyRecoveryPolicy(2000 + i);
+        await opened.store.flushAndCheckpoint();
+        assert.equal(opened.store.getHealth().checkpointHealthy, true);
+        const state = paperEngine.exportState();
+        baseline ??= state;
+        assert.deepEqual(state.balances, baseline.balances);
+        assert.deepEqual(state.riskState, baseline.riskState);
+        assert.deepEqual(state.fills, baseline.fills);
+        assert.deepEqual(state.trades, baseline.trades);
+      }
+    } finally { await rm(dataDir, { recursive: true, force: true }); }
+  });
+}

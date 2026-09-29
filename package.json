@@ -1,6 +1,6 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "BTC/USDT scanner with durable virtual paper execution",
   "type": "module",
@@ -10,6 +10,9 @@
     "replay:book": "tsx src/replay-book.ts",
     "replay:paper": "tsx src/replay-paper.ts",
     "paper": "tsx src/paper.ts",
+    "start:paper": "node dist/paper.js",
+    "state:check": "node dist/state-tools.js check",
+    "backup:state": "node dist/state-tools.js backup",
     "soak": "npm run build && node --expose-gc dist/soak.js",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",

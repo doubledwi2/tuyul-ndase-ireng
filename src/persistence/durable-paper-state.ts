@@ -1,10 +1,12 @@
-import { open, mkdir, readFile, rename } from 'node:fs/promises';
+import { open, mkdir, readFile, rename, readdir, unlink } from 'node:fs/promises';
+import { syncDirectory } from './directory-sync.js';
 import { dirname, join } from 'node:path';
 
 import {
   CHECKPOINT_EVERY_EVENTS,
   CHECKPOINT_SCHEMA_VERSION,
   JOURNAL_SCHEMA_VERSION,
+  JOURNAL_COMPACT_AFTER_RECORDS, JOURNAL_MAX_BYTES, MAX_JOURNAL_ARCHIVES,
 } from '../config/runtime.js';
 import {
   validatePaperEngineState,
@@ -33,6 +35,10 @@ export interface PersistenceHealth {
   lastCheckpointAt: number | null;
   lastJournalSeq: number;
   lastError: string | null;
+  journalBytes: number;
+  queueDepth: number;
+  dirtySince: number | null;
+  directorySyncSupported: boolean;
 }
 
 export interface DurablePaperStateStoreOptions {
@@ -40,6 +46,10 @@ export interface DurablePaperStateStoreOptions {
   checkpointEveryEvents?: number;
   now?: () => number;
   onHealthChange?: (health: PersistenceHealth) => void;
+  compactAfterRecords?: number;
+  journalMaxBytes?: number;
+  maxArchives?: number;
+  fault?: (step: 'beforeCheckpoint' | 'afterCheckpoint' | 'afterRotate') => void;
 }
 
 export interface DurablePaperStateOpenResult {
@@ -84,7 +94,7 @@ function parseCheckpoint(raw: string): PaperEngineCheckpoint {
   if (
     typeof parsed.savedAt !== 'number' ||
     !Number.isFinite(parsed.savedAt) ||
-    !Number.isInteger(parsed.lastAppliedJournalSeq) ||
+    !Number.isSafeInteger(parsed.lastAppliedJournalSeq) ||
     (parsed.lastAppliedJournalSeq as number) < 0
   ) {
     throw new Error('Checkpoint metadata is invalid.');
@@ -115,7 +125,7 @@ function parseJournal(raw: string): PaperJournalRecord[] {
       throw new Error(`Journal line ${index + 1} has an unsupported schema.`);
     }
     if (
-      !Number.isInteger(parsed.seq) ||
+      !Number.isSafeInteger(parsed.seq) ||
       (parsed.seq as number) <= previousSeq ||
       typeof parsed.recordedAt !== 'number' ||
       !Number.isFinite(parsed.recordedAt) ||
@@ -136,7 +146,7 @@ function parseJournal(raw: string): PaperJournalRecord[] {
 export async function writeAtomicCheckpoint(
   path: string,
   checkpoint: PaperEngineCheckpoint,
-): Promise<void> {
+): Promise<boolean> {
   const temporaryPath = `${path}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   const handle = await open(temporaryPath, 'w');
@@ -147,6 +157,7 @@ export async function writeAtomicCheckpoint(
     await handle.close();
   }
   await rename(temporaryPath, path);
+  return syncDirectory(dirname(path));
 }
 
 async function appendDurable(path: string, value: unknown): Promise<void> {
@@ -158,6 +169,7 @@ async function appendDurable(path: string, value: unknown): Promise<void> {
   } finally {
     await handle.close();
   }
+  await syncDirectory(dirname(path));
 }
 
 export class DurablePaperStateStore {
@@ -176,8 +188,16 @@ export class DurablePaperStateStore {
   private journalHealthy = true;
   private lastCheckpointAt: number | null = null;
   private lastError: string | null = null;
+  private journalBytes = 0;
+  private journalRecords = 0;
+  private queueDepth = 0;
+  private dirtySince: number | null = null;
+  private directorySyncSupported = true;
+  private durableSeq = 0;
+  private readonly options: DurablePaperStateStoreOptions;
 
   private constructor(options: DurablePaperStateStoreOptions) {
+    this.options = options;
     this.checkpointPath = join(options.dataDir, 'state', 'checkpoint.json');
     this.journalPath = join(options.dataDir, 'state', 'journal.jsonl');
     this.checkpointEveryEvents =
@@ -203,10 +223,23 @@ export class DurablePaperStateStore {
     const journal = journalRaw === null ? [] : parseJournal(journalRaw);
     const checkpointSeq = checkpoint?.lastAppliedJournalSeq ?? 0;
     const lastJournalSeq = journal.at(-1)?.seq ?? 0;
-    if (checkpointSeq > lastJournalSeq) {
-      throw new Error('Checkpoint sequence is ahead of the durable journal.');
+    const archives = await readdir(dirname(store.journalPath)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    if (checkpoint === null && archives.some(name => /^journal\.\d+\.jsonl$/.test(name))) {
+      throw new Error('Archived journals without checkpoint: recovery requires manual inspection.');
+    }
+    const newer = journal.filter(record => record.seq > checkpointSeq);
+    if (newer.some((record, index) => record.seq !== checkpointSeq + index + 1)) {
+      throw new Error('Journal sequence gap after checkpoint.');
     }
     store.lastJournalSeq = Math.max(checkpointSeq, lastJournalSeq);
+    store.durableSeq = store.lastJournalSeq;
+    store.journalBytes = Buffer.byteLength(journalRaw ?? '');
+    store.journalRecords = journal.length;
+    store.eventsSinceCheckpoint = newer.length;
+    store.dirtySince = newer.length > 0 ? newer[0]!.recordedAt : null;
     store.lastCheckpointAt = checkpoint?.savedAt ?? null;
     let recoveredState = checkpoint?.engineState ?? null;
     let replayedJournalRecords = 0;
@@ -226,9 +259,14 @@ export class DurablePaperStateStore {
   }
 
   record(event: PaperExecutionEvent): Promise<void> {
+    if (!this.journalHealthy) return this.pending;
     const seq = this.lastJournalSeq + 1;
     this.lastJournalSeq = seq;
+    this.queueDepth += 1;
+    this.dirtySince ??= this.now();
+    this.emitHealth();
     this.pending = this.pending.then(async () => {
+      if (!this.journalHealthy) { this.queueDepth -= 1; this.emitHealth(); return; }
       let engineState: PaperEngineState;
       try {
         engineState = this.requireStateProvider()();
@@ -241,22 +279,30 @@ export class DurablePaperStateStore {
           engineState,
         };
         await appendDurable(this.journalPath, record);
+        this.dirtySince ??= this.now();
+        this.durableSeq = seq;
+        this.journalRecords += 1;
+        this.journalBytes += Buffer.byteLength(`${JSON.stringify(record)}\n`);
         this.eventsSinceCheckpoint += 1;
         this.journalHealthy = true;
         this.lastError = null;
       } catch (error) {
+        this.queueDepth -= 1;
         this.journalHealthy = false;
         this.lastError = errorMessage(error);
         this.emitHealth();
         return;
       }
+      this.queueDepth -= 1;
       const terminalTrade =
         event.type === 'TRADE' && event.trade.closedAt !== null;
       const halted = engineState.riskState.sessionRiskState === 'RISK_HALTED';
       if (
         terminalTrade ||
         halted ||
-        this.eventsSinceCheckpoint >= this.checkpointEveryEvents
+        this.eventsSinceCheckpoint >= this.checkpointEveryEvents ||
+        this.journalRecords >= (this.options.compactAfterRecords ?? JOURNAL_COMPACT_AFTER_RECORDS) ||
+        this.journalBytes >= (this.options.journalMaxBytes ?? JOURNAL_MAX_BYTES)
       ) {
         try {
           await this.writeCheckpoint(engineState, seq);
@@ -275,7 +321,8 @@ export class DurablePaperStateStore {
       try {
         const state = this.requireStateProvider()();
         validatePaperEngineState(state);
-        await this.writeCheckpoint(state, this.lastJournalSeq);
+        if (!this.journalHealthy) throw new Error('Journal unhealthy: checkpoint advancement refused.');
+        await this.writeCheckpoint(state, this.durableSeq);
         this.lastError = null;
         this.emitHealth();
       } catch (error) {
@@ -303,6 +350,10 @@ export class DurablePaperStateStore {
       lastCheckpointAt: this.lastCheckpointAt,
       lastJournalSeq: this.lastJournalSeq,
       lastError: this.lastError,
+      journalBytes: this.journalBytes,
+      queueDepth: this.queueDepth,
+      dirtySince: this.dirtySince,
+      directorySyncSupported: this.directorySyncSupported,
     };
   }
 
@@ -324,10 +375,35 @@ export class DurablePaperStateStore {
       lastAppliedJournalSeq,
       engineState,
     };
-    await writeAtomicCheckpoint(this.checkpointPath, checkpoint);
+    this.options.fault?.('beforeCheckpoint');
+    this.directorySyncSupported = await writeAtomicCheckpoint(this.checkpointPath, checkpoint);
+    this.options.fault?.('afterCheckpoint');
     this.checkpointHealthy = true;
     this.lastCheckpointAt = savedAt;
     this.eventsSinceCheckpoint = 0;
+    this.dirtySince = null;
+    if (this.journalRecords >= (this.options.compactAfterRecords ?? JOURNAL_COMPACT_AFTER_RECORDS) ||
+        this.journalBytes >= (this.options.journalMaxBytes ?? JOURNAL_MAX_BYTES)) {
+      // All writes are serialized on pending. This checkpoint covers the entire
+      // active journal; sequence never resets. Missing journal after rotation is safe.
+      const verified = parseCheckpoint(await readFile(this.checkpointPath, 'utf8'));
+      if (verified.lastAppliedJournalSeq !== lastAppliedJournalSeq) throw new Error('Checkpoint verification failed.');
+      await rename(this.journalPath, join(dirname(this.journalPath), `journal.${lastAppliedJournalSeq}.jsonl`));
+      await syncDirectory(dirname(this.journalPath));
+      this.options.fault?.('afterRotate');
+      const fresh = await open(this.journalPath, 'wx', 0o600);
+      try { await fresh.sync(); } finally { await fresh.close(); }
+      await syncDirectory(dirname(this.journalPath));
+      this.journalBytes = 0;
+      this.journalRecords = 0;
+      const archives = (await readdir(dirname(this.journalPath)))
+        .filter(name => /^journal\.\d+\.jsonl$/.test(name))
+        .sort((a, b) => Number(b.split('.')[1]) - Number(a.split('.')[1]));
+      for (const name of archives.slice(this.options.maxArchives ?? MAX_JOURNAL_ARCHIVES)) {
+        await unlink(join(dirname(this.journalPath), name));
+      }
+      await syncDirectory(dirname(this.journalPath));
+    }
   }
 
   private emitHealth(): void {

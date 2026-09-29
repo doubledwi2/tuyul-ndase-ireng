@@ -1,5 +1,7 @@
 import WebSocket from 'ws';
 import { performance } from 'node:perf_hooks';
+import { Logger } from '../operations/logger.js';
+const logger = new Logger('okx');
 
 import type {
   NormalizedOrderBook,
@@ -57,7 +59,7 @@ export class OkxOrderBookState {
     if (message.event === 'error') {
       const code = typeof message.code === 'string' ? message.code : 'unknown';
       const reason = typeof message.msg === 'string' ? message.msg : 'unknown reason';
-      console.error(`[OKX] Subscription error ${code}: ${reason}`);
+      logger.error('subscription_rejected', reason, { code });
       return ignored;
     }
     if (
@@ -141,7 +143,7 @@ export function connectOkx(
     if (stopped || reconnectTimer !== null) {
       return;
     }
-    console.error(`[OKX] Disconnected; reconnecting in ${RECONNECT_DELAY_MS / 1_000}s`);
+    logger.warn('reconnecting', 'Disconnected; reconnect scheduled.', { delayMs: RECONNECT_DELAY_MS });
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
@@ -155,7 +157,7 @@ export function connectOkx(
     try {
       socket = new WebSocket(URL);
       socket.on('open', () => {
-        console.log('[OKX] Connected');
+        logger.info('connected', 'Public WebSocket connected.');
         onStatus?.(true);
         lastMessageAt = Date.now();
         pingSentAt = null;
@@ -171,7 +173,7 @@ export function connectOkx(
           }
           const now = Date.now();
           if (pingSentAt !== null && now - pingSentAt >= PONG_TIMEOUT_MS) {
-            console.error('[OKX] Heartbeat timed out; reconnecting');
+            logger.warn('heartbeat_timeout', 'Heartbeat timed out; reconnecting.');
             socket.terminate();
             return;
           }
@@ -192,14 +194,14 @@ export function connectOkx(
           receivedMonotonicMs,
         );
         if (result.sequenceGap) {
-          console.error('[OKX] Order book sequence gap; reconnecting');
+          logger.warn('sequence_gap', 'Order book sequence gap; reconnecting.');
           socket?.terminate();
         } else if (result.orderBook !== null) {
           onOrderBook(result.orderBook);
         }
       });
       socket.on('error', (error) => {
-        console.error(`[OKX] WebSocket error: ${error.message}`);
+        logger.error('websocket_error', error.message);
       });
       socket.on('close', () => {
         onStatus?.(false);
@@ -209,7 +211,7 @@ export function connectOkx(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[OKX] Connection error: ${message}`);
+      logger.error('connection_error', message);
       scheduleReconnect();
     }
   };

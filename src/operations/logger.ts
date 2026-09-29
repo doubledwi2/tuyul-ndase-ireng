@@ -62,7 +62,7 @@ export class Logger {
     const output =
       this.format === 'json'
         ? JSON.stringify(entry)
-        : `[${level}] [${this.component}] ${event}: ${message}`;
+        : `[${level}] [${this.component}] ${event}: ${message}${Object.keys(context).length ? ` ${JSON.stringify(context)}` : ''}`;
     if (level === 'ERROR') {
       console.error(output);
     } else if (level === 'WARN') {

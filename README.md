@@ -1,6 +1,6 @@
 # tuyul-ndase-ireng
 
-Durable Paper Trading Engine v0.4.0 adalah Phase 4.0 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Durable Paper Trading Engine v0.4.1 adalah Phase 4.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
 Aplikasi ini tidak memakai API key, autentikasi, private endpoint, atau real order. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint dan journal lokal, sementara transition per-run tetap ditulis sebagai JSONL. Tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
 
@@ -311,7 +311,43 @@ SOAK_ITERATIONS=10 npm run soak
 SOAK_DATASET=fixtures/paper-qualified-orderbooks.jsonl npm run soak
 ```
 
-Finite soak run hanya merupakan operational signal dan tidak membuktikan tidak adanya memory leak. Persistence ini masih single-process/local-disk, journal menyimpan state snapshot untuk deterministic recovery dan belum melakukan compaction, tidak menyediakan distributed locking/failover, dan belum memakai database atau remote observability.
+Finite soak run hanya merupakan operational signal dan tidak membuktikan tidak adanya memory leak. Persistence ini masih single-process/local-disk, journal menyimpan state snapshot untuk deterministic recovery, tidak menyediakan distributed locking/failover, dan belum memakai database atau remote observability. Phase 4.1 menambahkan compaction dan lock lokal seperti dijelaskan di bawah.
+
+### Phase 4.1 operasi jangka panjang
+
+Setelah checkpoint berhasil disimpan dan diverifikasi, journal dirotasi ke `journal.<seq>.jsonl` jika jumlah record mencapai 10.000 atau ukuran mencapai 50 MiB. Journal aktif baru kosong; sequence tetap monotonik, tidak reset. Recovery memulai dari checkpoint lalu menerapkan record aktif dengan sequence lebih tinggi secara berurutan. Maksimum tiga archive disimpan. Crash sebelum checkpoint masih memiliki journal lama; setelah checkpoint bisa memakai checkpoint + journal lama; setelah rename journal bisa memakai checkpoint tanpa journal aktif. Missing checkpoint ketika archive ada, corrupt state, dan sequence gap fail closed. File dan directory di-fsync setelah operasi rename; platform yang tidak mendukung directory fsync dilaporkan lewat metrics, bukan membuat crash otomatis. Ini meningkatkan durability, bukan menjamin semua filesystem/hardware.
+
+`runtime.lock` membatasi satu process per DATA_DIR. PID lokal yang mati boleh direcover; PID hidup/unknown, hostname berbeda, dan malformed lock ditolak. Ownership token mencegah instance lama menghapus lock baru. Shutdown melepaskan lock setelah flush. Mutex singkat `runtime.lock.guard` yang tertinggal karena crash memerlukan inspeksi operator offline; lihat panduan VPS. Jangan berbagi DATA_DIR lintas host atau PID namespace.
+
+Readiness membutuhkan book valid kedua exchange dalam 5 detik terakhir, selain timing sehat dan persistence sehat. Connected flag saja tidak cukup. Feed silence mengubah state ke WARMING_UP dan memblokir entry; fresh book dengan timing sehat memungkinkan RUNNING kembali. Heartbeat menyimpan `lastBybitBookAt`, `lastOkxBookAt`, `lastComparisonAt`, dan `lastExecutionEventAt`. `/ready` menyediakan typed reasons; `/live` tetap terpisah. `/health` menambahkan version, uptime, state, dan checkpoint time. `/metrics` memberikan JSON resource process, event-loop P50/P95/P99/max (ms), feed ages, active trades/orders, journal bytes/queue, disk free space, dan checkpoint age tanpa absolute path, raw stack, atau balance detail.
+
+Summary operasional terstruktur dicetak setiap 60 detik; event-loop histogram di-reset pada interval ini. JSON mode menonaktifkan render comparison per-tick. Nilai delay lokal ini bukan exchange latency. Disk dipoll setiap detik; kurang dari 500 MiB atau error pemeriksaan disk memblokir entry. API disk yang unsupported dilaporkan sebagai null dengan warning dan guard write-error tetap aktif. Persistence queue >1000 atau dirty state belum checkpoint >5 menit juga memblokir entry. Idle state yang sudah checkpoint tidak ditandai stale. State dirty dicheckpoint pada summary period jika tidak ada journal write pending, selain cadence 100 event dan terminal/shutdown.
+
+Semua konfigurasi operasional dibaca di `src/config/runtime.ts`, nilai invalid menggagalkan startup. Snapshot config saat startup memakai allowlist. Default tambahan:
+
+| Variable | Default |
+| --- | --- |
+| CHECKPOINT_EVERY_EVENTS | 100 |
+| JOURNAL_COMPACT_AFTER_RECORDS | 10000 |
+| JOURNAL_MAX_BYTES | 52428800 |
+| MAX_JOURNAL_ARCHIVES | 3 |
+| MAX_FEED_SILENCE_MS | 5000 |
+| MIN_FREE_DISK_MB | 500 |
+| MAX_CHECKPOINT_AGE_MS | 300000 |
+| MAX_PERSISTENCE_QUEUE_DEPTH | 1000 |
+
+```sh
+npm run build
+npm run start:paper
+# Stop service sebelum maintenance; gunakan DATA_DIR yang sama:
+npm run state:check
+npm run backup:state
+SOAK_ITERATIONS=10 npm run soak
+```
+
+State checker memvalidasi tanpa WebSocket dan tanpa mengubah checkpoint/journal. Tools maintenance mengambil lock sehingga live service harus berhenti. Backup berupa archive timestamped dalam DATA_DIR/backups, hanya state recovery; tidak menyertakan raw market dataset. Restore selalu pilihan operator, tidak otomatis. Soak melaporkan sampled peak RSS/heap, start/end/delta, runtime, records/sec, dan tren heap antar-iterasi dengan post-GC jika tersedia. Variasi GC kecil tidak menggagalkan soak; perbedaan digest replay menggagalkannya.
+
+Panduan lengkap: [deployment VPS](docs/VPS_DEPLOYMENT.md), [NTP/chrony](docs/TIME_SYNC.md), [systemd unit](deploy/systemd/tuyul-paper.service), [environment example](deploy/paper.env.example). Service berjalan sebagai user non-root, health bind default 127.0.0.1, log retention dikelola journald. Journal archive terbatas; retention backup/per-run paper event tetap tanggung jawab operator. Belum ada uji berhari-hari atau jaminan bebas memory leak.
 
 ## Raw market recording
 
@@ -511,8 +547,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 3.1 execution latency, partial fill, dan leg-risk simulation: complete.
 - Phase 3.1.1 fresh-book unwind guard: complete.
 - Phase 3.2 inventory, rebalancing suggestion, dan risk limits: complete.
-- Phase 4.0 durable state, crash recovery, dan operational hardening: complete/current.
+- Phase 4.0 durable state, crash recovery, dan operational hardening: complete.
+- Phase 4.1 long-run operations, VPS deployment, dan observability: current.
 
-## Scope Phase 4.0
+## Scope Phase 4.1
 
 Scope versi ini menambahkan durable local checkpoint/journal, validated crash recovery, startup/readiness gating, structured logging, health endpoint localhost, graceful persistence shutdown, dan bounded in-memory histories di atas deterministic paper execution. Tidak ada real order execution, automatic transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.

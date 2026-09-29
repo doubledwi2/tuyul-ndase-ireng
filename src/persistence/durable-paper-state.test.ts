@@ -131,6 +131,9 @@ test('journal write failure marks persistence unhealthy', async () => {
     const health = opened.store.getHealth();
     assert.equal(health.journalHealthy, false);
     assert.match(health.lastError ?? '', /ENOTDIR|EEXIST/);
+    await opened.store.checkpoint();
+    assert.equal(opened.store.getHealth().checkpointHealthy, false);
+    assert.equal(opened.store.getHealth().queueDepth, 0);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

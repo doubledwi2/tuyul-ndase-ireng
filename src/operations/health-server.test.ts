@@ -70,6 +70,8 @@ test('operational state requires recovery, feeds, timing, and persistence', () =
   assert.equal(state.getState(), 'WARMING_UP');
   state.setFeedConnected('bybit', true);
   state.setFeedConnected('okx', true);
+  state.observeBook('bybit');
+  state.observeBook('okx');
   state.observeTiming('SYNC_HEALTHY', 'HEALTHY');
   assert.equal(state.getState(), 'RUNNING');
   assert.equal(state.canAcceptPaperEntry(), true);

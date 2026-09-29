@@ -10,6 +10,19 @@ if (!Number.isInteger(iterations) || iterations <= 0) {
 }
 
 let expectedDigest: string | null = null;
+globalThis.gc?.();
+const startedAt = performance.now();
+const startMemory = process.memoryUsage();
+let peakRss = startMemory.rss;
+let peakHeap = startMemory.heapUsed;
+let records = 0;
+const heaps: number[] = [];
+const sampler = setInterval(() => {
+  const memory = process.memoryUsage();
+  peakRss = Math.max(peakRss, memory.rss);
+  peakHeap = Math.max(peakHeap, memory.heapUsed);
+}, 100);
+sampler.unref();
 for (let iteration = 1; iteration <= iterations; iteration += 1) {
   const result = await runLatencyPaperReplay({
     filePath: dataset,
@@ -34,6 +47,10 @@ for (let iteration = 1; iteration <= iterations; iteration += 1) {
   }
   globalThis.gc?.();
   const memory = process.memoryUsage();
+  heaps.push(memory.heapUsed);
+  records += result.processedRecords;
+  peakRss = Math.max(peakRss, memory.rss);
+  peakHeap = Math.max(peakHeap, memory.heapUsed);
   const handles = process.getActiveResourcesInfo?.() ?? [];
   console.log(
     JSON.stringify({
@@ -49,6 +66,17 @@ for (let iteration = 1; iteration <= iterations; iteration += 1) {
     }),
   );
 }
+clearInterval(sampler);
+const endMemory = process.memoryUsage();
+const runtimeSec = (performance.now() - startedAt) / 1000;
+console.log(JSON.stringify({ startMemory, endMemory, peakRss, peakHeap,
+  deltaRss: endMemory.rss - startMemory.rss, deltaHeap: endMemory.heapUsed - startMemory.heapUsed,
+  runtimeSec, recordsPerSecond: records / runtimeSec,
+  postGc: typeof globalThis.gc === 'function',
+  heapTrendBytesPerIteration: heaps.length < 2 ? null : (heaps.at(-1)! - heaps[0]!) / (heaps.length - 1),
+  trend: heaps.length >= 3 && heaps.slice(1).every((value, i) => value > heaps[i]! * 1.1)
+    ? 'CONSISTENT_GROWTH_REVIEW' : 'NO_OBVIOUS_SUSTAINED_GROWTH',
+}));
 
 console.log(
   `[SOAK] Completed ${iterations} deterministic replay iteration(s). This finite run is not proof that a memory leak is absent.`,
