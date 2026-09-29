@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sanitizeError } from '../security/secrets.js';
 import { join } from 'node:path';
 
 import {
@@ -8,7 +9,7 @@ import {
 import type { PaperExecutionEvent } from './types.js';
 
 function defaultErrorHandler(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = sanitizeError(error);
   console.error(`[PAPER EVENT RECORDER] Write failed: ${message}`);
 }
 

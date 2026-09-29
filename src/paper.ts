@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { loadExecutionBoundary } from './execution/startup.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { DATA_DIR, HEALTH_HOST, HEALTH_PORT, LOG_FORMAT, operationalConfigSnapshot } from './config/runtime.js';
@@ -46,7 +47,9 @@ let resources: ResourceMonitor | null = null;
 
 async function main(): Promise<void> {
   const logger = new Logger('paper-runtime');
-  logger.info('effective_config', 'Effective operational config (allowlisted).', operationalConfigSnapshot());
+  const safety = await loadExecutionBoundary();
+  logger.info('execution_safety', `Execution mode: PAPER; Real execution: DISABLED; Kill switch: ${safety.executionKillSwitch ? 'ENABLED' : 'DISABLED'}; Private Bybit credentials configured: ${safety.bybitPrivateCredentialsConfigured ? 'yes' : 'no'}; Private OKX credentials configured: ${safety.okxPrivateCredentialsConfigured ? 'yes' : 'no'}.`, safety);
+  logger.info('effective_config', 'Effective operational config (allowlisted).', { ...operationalConfigSnapshot(), ...safety });
   runtimeLock = await acquireRuntimeLock(DATA_DIR);
   resources = new ResourceMonitor();
   let diskBytes: number | null = await freeDiskBytes(DATA_DIR);

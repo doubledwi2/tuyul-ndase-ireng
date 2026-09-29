@@ -550,6 +550,26 @@ export class LatencyPaperTradingEngine {
     return [...this.orders.values()].map(cloneOrder);
   }
 
+  cancelPaperOrder(orderId: string, timestamp: number): PaperOrder {
+    if (!Number.isFinite(timestamp) || timestamp < this.lastLogicalTimestamp) {
+      throw new RangeError('Cancellation timestamp must be finite and cannot move backwards.');
+    }
+    const order = this.requireOrder(orderId);
+    if (terminal(order)) return cloneOrder(order);
+    this.lastLogicalTimestamp = timestamp;
+    order.state = 'CANCELLED';
+    order.completedAt = timestamp;
+    this.releaseOrderReservation(order);
+    this.emitOrder(order, timestamp);
+    const trade = this.trades.find(value => value.id === order.tradeId)!;
+    if (order.isUnwind) this.refreshTradeAfterUnwind(trade, timestamp);
+    else this.refreshTrade(trade, timestamp);
+    // Cancellation never consumes a cached book or submits an unwind. Subsequent
+    // genuine book updates retain the existing exposure/unwind rules.
+    this.riskManager.observeExposure(this.trades);
+    return cloneOrder(order);
+  }
+
   getFills(): PaperFill[] {
     return this.fills.map((fill) => ({ ...fill }));
   }

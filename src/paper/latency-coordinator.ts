@@ -6,6 +6,7 @@ import {
   LatencyPaperTradingEngine,
 } from './latency-engine.js';
 import type { LatencyPaperTrade } from './types.js';
+import { PaperExecutionAdapter } from '../execution/paper-adapter.js';
 
 export interface LatencyPaperCoordinatorOptions {
   engine: LatencyPaperTradingEngine;
@@ -15,7 +16,10 @@ export interface LatencyPaperCoordinatorOptions {
 }
 
 export class LatencyPaperCoordinator {
-  constructor(private readonly options: LatencyPaperCoordinatorOptions) {}
+  private readonly adapter: PaperExecutionAdapter;
+  constructor(private readonly options: LatencyPaperCoordinatorOptions) {
+    this.adapter = new PaperExecutionAdapter(options.engine, options.canAcceptEntry);
+  }
 
   processOpportunity(
     event: OpportunityEvent,
@@ -23,9 +27,6 @@ export class LatencyPaperCoordinator {
     timestamp: number,
   ): LatencyPaperTrade | null {
     if (event.state !== 'QUALIFIED') {
-      return null;
-    }
-    if (this.options.canAcceptEntry?.() === false) {
       return null;
     }
     const comparisonIndex = snapshot.comparisons.findIndex(
@@ -37,7 +38,7 @@ export class LatencyPaperCoordinator {
     if (qualification === undefined) {
       return null;
     }
-    const trade = this.options.engine.triggerOpportunity({
+    const trade = this.adapter.submitOrder({
       event,
       bybitBook: snapshot.bybitBook,
       okxBook: snapshot.okxBook,
@@ -45,7 +46,7 @@ export class LatencyPaperCoordinator {
       timestamp,
       latestQualification: qualification,
     });
-    this.options.onTradeTriggered?.(trade);
+    if (trade !== null) this.options.onTradeTriggered?.(trade);
     return trade;
   }
 

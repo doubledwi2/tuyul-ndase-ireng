@@ -1,5 +1,6 @@
 import { open, mkdir, readFile, rename, readdir, unlink } from 'node:fs/promises';
 import { syncDirectory } from './directory-sync.js';
+import { assertNoSecrets, sanitizeError } from '../security/secrets.js';
 import { dirname, join } from 'node:path';
 
 import {
@@ -63,7 +64,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return sanitizeError(error);
 }
 
 async function readOptional(path: string): Promise<string | null> {
@@ -86,7 +87,7 @@ function parseCheckpoint(raw: string): PaperEngineCheckpoint {
   try {
     parsed = JSON.parse(raw) as unknown;
   } catch (error) {
-    throw new Error(`Checkpoint JSON is malformed: ${errorMessage(error)}`);
+    throw new Error('Checkpoint JSON is malformed (payload omitted).');
   }
   if (!isRecord(parsed) || parsed.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) {
     throw new Error('Unsupported or missing checkpoint schemaVersion.');
@@ -118,7 +119,7 @@ function parseJournal(raw: string): PaperJournalRecord[] {
       parsed = JSON.parse(line) as unknown;
     } catch (error) {
       throw new Error(
-        `Journal line ${index + 1} is malformed: ${errorMessage(error)}`,
+        `Journal line ${index + 1} is malformed (payload omitted).`,
       );
     }
     if (!isRecord(parsed) || parsed.schemaVersion !== JOURNAL_SCHEMA_VERSION) {
@@ -148,10 +149,12 @@ export async function writeAtomicCheckpoint(
   checkpoint: PaperEngineCheckpoint,
 ): Promise<boolean> {
   const temporaryPath = `${path}.tmp`;
+  const serialized = `${JSON.stringify(checkpoint)}\n`;
+  assertNoSecrets(serialized);
   await mkdir(dirname(path), { recursive: true });
   const handle = await open(temporaryPath, 'w');
   try {
-    await handle.writeFile(`${JSON.stringify(checkpoint)}\n`, 'utf8');
+    await handle.writeFile(serialized, 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
@@ -161,10 +164,12 @@ export async function writeAtomicCheckpoint(
 }
 
 async function appendDurable(path: string, value: unknown): Promise<void> {
+  const serialized = `${JSON.stringify(value)}\n`;
+  assertNoSecrets(serialized);
   await mkdir(dirname(path), { recursive: true });
   const handle = await open(path, 'a');
   try {
-    await handle.writeFile(`${JSON.stringify(value)}\n`, 'utf8');
+    await handle.writeFile(serialized, 'utf8');
     await handle.sync();
   } finally {
     await handle.close();
@@ -218,6 +223,8 @@ export class DurablePaperStateStore {
     const store = new DurablePaperStateStore(options);
     const checkpointRaw = await readOptional(store.checkpointPath);
     const journalRaw = await readOptional(store.journalPath);
+    if (checkpointRaw !== null) assertNoSecrets(checkpointRaw);
+    if (journalRaw !== null) assertNoSecrets(journalRaw);
     const checkpoint =
       checkpointRaw === null ? null : parseCheckpoint(checkpointRaw);
     const journal = journalRaw === null ? [] : parseJournal(journalRaw);

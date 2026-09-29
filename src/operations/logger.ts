@@ -4,6 +4,7 @@ import {
   type LogFormat,
   type LogLevel,
 } from '../config/runtime.js';
+import { safeJson, redactSecret, sanitize } from '../security/secrets.js';
 
 export interface LogContext {
   tradeId?: string;
@@ -52,17 +53,17 @@ export class Logger {
       return;
     }
     const entry = {
+      ...sanitize(context) as Record<string, unknown>,
       timestamp: new Date().toISOString(),
       level,
       component: this.component,
       event,
       message,
-      ...context,
     };
     const output =
       this.format === 'json'
-        ? JSON.stringify(entry)
-        : `[${level}] [${this.component}] ${event}: ${message}${Object.keys(context).length ? ` ${JSON.stringify(context)}` : ''}`;
+        ? safeJson(entry)
+        : `${redactSecret(`[${level}] [${this.component}] ${event}: ${message}`)}${Object.keys(context).length ? ` ${safeJson(context)}` : ''}`;
     if (level === 'ERROR') {
       console.error(output);
     } else if (level === 'WARN') {

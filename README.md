@@ -1,8 +1,26 @@
 # tuyul-ndase-ireng
 
-Durable Paper Trading Engine v0.4.1 adalah Phase 4.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Durable Paper Trading Engine v0.4.2 adalah Phase 4.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
-Aplikasi ini tidak memakai API key, autentikasi, private endpoint, atau real order. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint dan journal lokal, sementara transition per-run tetap ditulis sebagai JSONL. Tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
+Aplikasi ini tidak memakai API key sungguhan, autentikasi exchange, private endpoint, atau real order. Phase 4.2 DOES NOT enable real trading. Konfigurasi credential hanya boundary validasi lokal untuk persiapan, diuji dengan dummy values. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint dan journal lokal, sementara transition per-run tetap ditulis sebagai JSONL. Tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
+
+### Phase 4.2 execution safety
+
+`src/execution/` memisahkan adapter dari public market data. `PaperExecutionAdapter` membungkus engine dua-leg yang ada dan mempertahankan readiness/risk checks. `DisabledLiveExecutionAdapter` selalu melempar safety error pada submit/cancel/status; approval live selalu false. Capability Bybit/OKX hanya mengizinkan public market data dan tidak dapat diubah lewat environment.
+
+Default: `EXECUTION_MODE=paper`, `REAL_EXECUTION_ENABLED=false`, `EXECUTION_KILL_SWITCH=true`. Nilai mode lain ditolak; real-enabled true menggagalkan startup sebelum WebSocket dengan pesan “Real execution is not implemented/enabled in Phase 4.2.” Kill switch off tetap tidak mengaktifkan private execution.
+
+Nama future credential: `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, masing-masing mendukung `_FILE`. Set parsial, nilai kosong/whitespace, dan direct+FILE bersamaan ditolak. Secret file Unix harus owner-readable tanpa akses group/other; gunakan 0400/0600. Jangan gunakan credential sungguhan pada fase ini.
+
+Secret wrapper menyembunyikan nilai dari JSON/inspect. Logger/error/HTTP output meredaksi exact configured values; checkpoint, journal, paper event, recovery dan backup menolak payload yang mengandung nilai tersebut. Config snapshot hanya mencatat credential-configured booleans. Replay, soak, dan state-check tidak memuat private credentials.
+
+```sh
+npm run build
+npm run execution:check
+npm run secret:scan
+```
+
+Scanner secret bersifat heuristic, bukan jaminan bebas kebocoran; tidak memasang Git hook. Baca [SECURITY_BOUNDARY.md](docs/SECURITY_BOUNDARY.md) untuk model capability, OrderIntent/clientOrderId, batas redaction, dan desain systemd credential.
 
 ## Data source
 
@@ -548,8 +566,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 3.1.1 fresh-book unwind guard: complete.
 - Phase 3.2 inventory, rebalancing suggestion, dan risk limits: complete.
 - Phase 4.0 durable state, crash recovery, dan operational hardening: complete.
-- Phase 4.1 long-run operations, VPS deployment, dan observability: current.
+- Phase 4.1 long-run operations, VPS deployment, dan observability: complete.
+- Phase 4.2 execution safety, secret boundary, dan adapter abstraction: current.
 
-## Scope Phase 4.1
+## Scope Phase 4.2
 
-Scope versi ini menambahkan durable local checkpoint/journal, validated crash recovery, startup/readiness gating, structured logging, health endpoint localhost, graceful persistence shutdown, dan bounded in-memory histories di atas deterministic paper execution. Tidak ada real order execution, automatic transfer, private API/WebSocket, API key, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan execution adapter abstraction, credential validation lokal, secret redaction, immutable private capability guard, dan fail-closed startup di atas foundation durability/operasi Phase 4.0–4.1. Tidak ada real order execution, automatic transfer, private API/WebSocket call, API key sungguhan, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.

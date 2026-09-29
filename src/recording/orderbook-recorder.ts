@@ -1,4 +1,5 @@
 import type { NormalizedOrderBook } from '../types/orderbook.js';
+import { sanitizeError } from '../security/secrets.js';
 import {
   JsonlWriter,
   type RecorderErrorHandler,
@@ -12,7 +13,7 @@ export interface OrderBookRecord {
 }
 
 function defaultErrorHandler(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = sanitizeError(error);
   console.error(`[ORDERBOOK RECORDER] Write failed: ${message}`);
 }
 

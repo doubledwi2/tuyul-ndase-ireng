@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sanitizeError } from '../security/secrets.js';
 import { join } from 'node:path';
 
 import {
@@ -13,7 +14,7 @@ export interface PaperTradeRecord {
 }
 
 function defaultErrorHandler(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = sanitizeError(error);
   console.error(`[PAPER RECORDER] Write failed: ${message}`);
 }
 

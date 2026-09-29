@@ -1,4 +1,5 @@
 import type { BestQuote } from '../types/market.js';
+import { sanitizeError } from '../security/secrets.js';
 import {
   JsonlWriter,
   type RecorderErrorHandler,
@@ -12,7 +13,7 @@ export interface MarketQuoteRecord {
 }
 
 function defaultErrorHandler(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = sanitizeError(error);
   console.error(`[MARKET RECORDER] Write failed: ${message}`);
 }
 

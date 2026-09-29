@@ -1,4 +1,6 @@
 import { performance } from 'node:perf_hooks';
+import { loadExecutionBoundary } from './execution/startup.js';
+import { Logger } from './operations/logger.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { CLOCK_JUMP_THRESHOLD_MS } from './config/timing.js';
@@ -19,6 +21,9 @@ import {
   printOpportunityEvent,
 } from './ui/console.js';
 import { ClockHealthMonitor } from './timing/clock-health.js';
+
+const safety = await loadExecutionBoundary();
+new Logger('market-runtime').info('execution_safety', 'Public market data; real execution DISABLED.', safety);
 
 const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;

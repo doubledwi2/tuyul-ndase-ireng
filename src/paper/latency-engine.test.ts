@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DurablePaperStateStore } from '../persistence/durable-paper-state.js';
+import { PaperExecutionAdapter } from '../execution/paper-adapter.js';
 
 import {
   INITIAL_PAPER_BALANCES,
@@ -583,6 +584,34 @@ test('terminal in-memory paper history is bounded', () => {
   trigger(paperEngine, { ...event('new'), state: 'DETECTED' });
   assert.equal(paperEngine.getTrades().length, 1);
   assert.equal(paperEngine.getTrades()[0]?.opportunityEventId, 'new');
+});
+
+test('paper adapter cancel releases reservations once and does not fabricate fills', () => {
+  const paperEngine = engine();
+  const trade = trigger(paperEngine);
+  const adapter = new PaperExecutionAdapter(paperEngine);
+  assert.equal(adapter.getOrderStatus(trade.buyOrderId)?.state, 'SUBMITTED');
+  adapter.cancelOrder(trade.buyOrderId, 1100);
+  const balances = paperEngine.getBalances();
+  assert.equal(balances.bybit.usdtReserved, 0);
+  assert.equal(adapter.cancelOrder(trade.buyOrderId, 1100).state, 'CANCELLED');
+  assert.deepEqual(paperEngine.getBalances(), balances);
+  assert.equal(paperEngine.getFills().length, 0);
+  assert.equal(adapter.getOrderStatus('missing'), null);
+  assert.throws(() => adapter.cancelOrder(trade.sellOrderId, 900));
+  adapter.cancelOrder(trade.sellOrderId, 1101);
+  assert.equal(paperEngine.getBalances().okx.btcReserved, 0);
+  LatencyPaperTradingEngine.fromState(paperEngine.exportState());
+});
+
+test('paper adapter cancellation preserves partial residual and does not consume cached book', () => {
+  const paperEngine = engine();
+  const trade = trigger(paperEngine);
+  paperEngine.processOrderBook(book('bybit', 1050, 99, 100), 1050);
+  new PaperExecutionAdapter(paperEngine).cancelOrder(trade.sellOrderId, 1060);
+  assert.equal(paperEngine.getTrades()[0]?.residualBaseExposure, 0.01);
+  assert.equal(paperEngine.getFills().length, 1);
+  LatencyPaperTradingEngine.fromState(paperEngine.exportState());
 });
 
 for (const scenario of ['filled', 'pending', 'residual'] as const) {

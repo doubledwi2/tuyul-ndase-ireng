@@ -1,0 +1,43 @@
+# Phase 4.2 execution and secret boundary
+
+Phase 4.2 DOES NOT enable real trading. Use no real exchange credentials in this phase. The configuration model is for local shape validation with dummy values; it never tests a credential against an exchange.
+
+## Planes and adapters
+
+Public market data stays in `src/exchanges/` using the existing unauthenticated WebSockets. Scanner/pipeline has no private client or secret configuration. `src/execution/` defines the execution interface; the coordinator uses `PaperExecutionAdapter` around the existing latency engine. Paper submission continues to mean a qualified two-leg opportunity: readiness is checked first and the existing engine owns timing, inventory, risk, duplicate detection and reservations. Risk-rejected trades remain recorded as before. Preliminary approval can reject readiness or a sticky risk halt; approval alone never bypasses the engine checks.
+
+The generic interface has submit, cancel, and status operations. Paper cancellation releases only the remaining reservation, preserves fills and residual, and never consumes a cached book. Exposure handling still follows subsequent genuine book updates. `DisabledLiveExecutionAdapter` throws `ExecutionSafetyError` on every operation, including status and cancel. Its immutable approval is always false. Both exchanges' frozen capabilities are publicMarketData=true and privateRead/privateTrade/withdrawal=false. No environment override can enable them.
+
+`OrderRequest` and immutable `OrderIntent` are preparation DTOs without side effects. They are not translated into private requests. Client IDs use a fixed `tni` prefix plus 28 UUID-derived hex characters (31 characters total), contain no user/secret inputs, and have explicit validation. Intent construction accepts injected IDs/time for deterministic tests. Existing engine IDs and replay results are unchanged; the current pair engine does not accept arbitrary single-leg generic requests.
+
+## Fail-closed startup
+
+| Setting | Default | Phase 4.2 behavior |
+| --- | --- | --- |
+| EXECUTION_MODE | paper | Only paper accepted; live/real/unknown fail |
+| REAL_EXECUTION_ENABLED | false | true fails with “Real execution is not implemented/enabled in Phase 4.2.” |
+| EXECUTION_KILL_SWITCH | true | Blocks future private execution; false still cannot enable anything |
+
+Boolean settings accept exactly `true` or `false`. The live paper and public scanner entrypoints validate before acquiring state or starting feeds. A future real-execution phase would need both an explicit enable gate and kill switch off, plus separately implemented/reviewed capabilities. Those conditions do not create an execution path in this version.
+
+The startup banner and operational snapshot report mode, gates and two credential-configured booleans only. `npm run execution:check` validates configuration offline and prints that sanitized summary. Build before invoking compiled CLI tools. `state:check`, replay and soak never load or require private credential files; their output/determinism does not depend on private configuration. Backup optionally loads configured dummy credentials to reject accidental matching data in recovery files.
+
+## Secret configuration
+
+Supported future names are `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `OKX_API_KEY`, `OKX_API_SECRET`, and `OKX_API_PASSPHRASE`; every name also supports the `_FILE` suffix. A Bybit pair must be fully absent or fully present; OKX requires all three together. Empty values, whitespace/control characters, values longer than 4096 characters, partial sets, and simultaneous direct/FILE values fail. Files allow one final LF/CRLF. File paths and contents never appear in validation errors.
+
+Secret files must be regular files, not symlinks; Unix files require owner-read permission and no group/other permissions (use 0400 or 0600). On Windows the Unix mode check is skipped; operators must enforce ACLs. Parent directories should be private to the service/administrator. Place files outside DATA_DIR, repository, journal and backup roots. There is no .env auto-loader or credential hot reload.
+
+`SecretString` stores a JavaScript-private value, has no public reveal operation, and prints/serializes/inspects as `[REDACTED]`. Loading explicitly registers configured values for process-lifetime exact-value redaction. Logger messages, nested context, field names and errors are sanitized; safe serialization avoids executing getters/custom toJSON. Health/metrics/readiness HTTP output uses the same sanitizer. Native malformed-JSON errors omit persisted payload excerpts.
+
+Secrets/config wrappers are never part of the engine state DTO. Persistence checks serialized checkpoint/journal/event payloads and refuses matching secret values instead of redacting accounting state. Recovery and backup checks also reject configured values in existing files. Backup never copies credential paths or environment files. Tests exercise these boundaries using generated dummy markers and inspect extracted archives.
+
+This is defense in depth, not encryption or a sandbox against malicious code. Secret values remain in process memory for redaction; JavaScript cannot promise secure zeroization. Redaction covers registered exact strings, not every possible encoding/transformation or unknown secret. Extremely short values can cause broad redaction or persistence rejection; use unmistakable dummy markers for validation. Do not put secrets in identifiers, paths or public data.
+
+## Deployment and scanning
+
+Use EnvironmentFile for non-secret operational configuration. For eventual credential delivery prefer systemd `LoadCredential=` with `_FILE` variables; see [VPS deployment](VPS_DEPLOYMENT.md). A root-owned 0600 environment file is a fallback design, but environment values are inherited by child processes. No real values belong in committed files, command arguments, logs, checkpoints or backups.
+
+`npm run secret:scan` checks tracked and non-ignored untracked project text files. It detects credential assignments, obvious dummy secret markers and private-key headers, reporting only file/line/reason. It excludes node_modules, dist, data, backups, binary files and symlinks. It is a heuristic—not proof of no leak; ignored files and git history require separate review. Tests construct fake fixtures dynamically so production source/examples contain no usable credentials. An optional local pre-commit hook may run build and this scanner; hooks are not installed automatically.
+
+`.env`, `.env.*`, `*.secret`, `secrets/`, and `credentials/` are ignored; committed examples remain available. If a real credential was ever committed, removing it from the latest file does not revoke it or remove history; rotate it through your normal incident process.

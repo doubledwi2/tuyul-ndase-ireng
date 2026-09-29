@@ -67,3 +67,23 @@ Lock diagnostics contain PID, hostname, start time and ownership token. A live P
 Compaction occurs only after a durable checkpoint. Sequences stay monotonic across archives. Checkpoint plus current journal is authoritative; archives are retained for manual diagnostics and are never silently replayed over a newer checkpoint. Unknown schema, corruption or missing checkpoint with archives fails closed. Directory fsync after rename improves machine-crash durability, but filesystem/hardware semantics still matter. Unsupported directory sync is explicitly reported; other I/O errors degrade persistence.
 
 See [time discipline](TIME_SYNC.md). systemd behavior reference: [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html).
+
+## Phase 4.2 credential delivery boundary
+
+Keep `/etc/tuyul-paper.env` limited to non-secret operational settings, including `EXECUTION_MODE=paper`, `REAL_EXECUTION_ENABLED=false`, and `EXECUTION_KILL_SWITCH=true`. Phase 4.2 needs no real credentials; test this design only with dummy files. Read the [security boundary](SECURITY_BOUNDARY.md) before local validation.
+
+For future credential delivery, a systemd drop-in can map protected source files to the app's `_FILE` inputs. Configure a complete set for each exchange you choose; the following conceptual example covers Bybit only:
+
+```ini
+[Service]
+LoadCredential=bybit-key:/etc/tuyul/credentials/bybit-key
+LoadCredential=bybit-secret:/etc/tuyul/credentials/bybit-secret
+Environment=BYBIT_API_KEY_FILE=%d/bybit-key
+Environment=BYBIT_API_SECRET_FILE=%d/bybit-secret
+```
+
+For OKX use three analogous credentials mapped to `OKX_API_KEY_FILE`, `OKX_API_SECRET_FILE`, and `OKX_API_PASSPHRASE_FILE`. Keep source files outside DATA_DIR and the checkout, root-owned 0600 with private parent directories. systemd supplies service-readable files; the application still runs non-root. Do not set the corresponding direct environment names at the same time. This template is not installed or activated automatically and has not been tested on a target VPS.
+
+systemd supports the `%d` credential-directory specifier in unit Environment entries; do not expect expansion in an EnvironmentFile. See the [official systemd credential documentation](https://systemd.io/CREDENTIALS/). On a host without credential support, a separate root-owned 0600 EnvironmentFile is a fallback, with environment-inheritance limitations. Never commit that file. Run `systemd-analyze verify` on the target unit/drop-in and test only dummy values in Phase 4.2.
+
+After build, `npm run execution:check` performs presence/shape checks locally; it does not authenticate, sign or contact an exchange. Supplying a credential or disabling the kill switch never enables private operations. `npm run secret:scan` can be part of an optional operator-managed pre-commit check.

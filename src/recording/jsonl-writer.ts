@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { assertNoSecrets } from '../security/secrets.js';
 
 export type RecorderErrorHandler = (error: unknown) => void;
 
@@ -15,6 +16,7 @@ export class JsonlWriter {
     let line: string;
     try {
       line = `${JSON.stringify(value)}\n`;
+      assertNoSecrets(line);
     } catch (error) {
       this.onError(error);
       return Promise.resolve();

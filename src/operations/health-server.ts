@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { safeJson } from '../security/secrets.js';
 
 import type { ServiceHealth } from './operational-state.js';
 
@@ -36,6 +37,7 @@ export function getHealthHttpResponse(
   method: string | undefined,
   path: string | undefined,
   health: ServiceHealth,
+  metrics: Record<string, unknown> = {},
 ): HealthHttpResponse {
   if (method !== 'GET') {
     return { statusCode: 405, body: { status: 'method_not_allowed' } };
@@ -46,6 +48,7 @@ export function getHealthHttpResponse(
   if (path === '/health') {
     return { statusCode: 200, body: health };
   }
+  if (path === '/metrics') return { statusCode: 200, body: metrics };
   if (path === '/ready') {
     const isReady = ready(health);
     return {
@@ -64,18 +67,14 @@ export async function startHealthServer(
     response.setHeader('content-type', 'application/json; charset=utf-8');
     if (request.method === 'GET' && request.url === '/live') {
       response.statusCode = 200;
-      response.end(JSON.stringify({ status: 'live' }));
-      return;
-    }
-    if (request.method === 'GET' && request.url === '/metrics') {
-      response.statusCode = 200;
-      response.end(JSON.stringify(options.getMetrics?.() ?? {}));
+      response.end(safeJson({ status: 'live' }));
       return;
     }
     const health = options.getHealth();
-    const result = getHealthHttpResponse(request.method, request.url, health);
+    const result = getHealthHttpResponse(request.method, request.url, health,
+      request.url === '/metrics' ? options.getMetrics?.() : undefined);
     response.statusCode = result.statusCode;
-    response.end(JSON.stringify(result.body));
+    response.end(safeJson(result.body));
   });
 
   await new Promise<void>((resolve, reject) => {
