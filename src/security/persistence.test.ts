@@ -80,15 +80,18 @@ test('accidental secret payload fails persistence instead of mutating durable st
     await assert.rejects(readFile(join(dataDir, 'rejected.jsonl')), { code: 'ENOENT' });
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
-test('state-check remains offline and ignores unusable private credential files', async () => {
+test('state-check and backup remain offline and ignore unusable private credential files', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'tuyul-offline-state-'));
   try {
     const { store } = await DurablePaperStateStore.open({ dataDir });
     store.attachStateProvider(() => new LatencyPaperTradingEngine().exportState());
     await store.checkpoint();
-    const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', 'src/state-tools.ts', 'check'], {
-      env: { PATH: process.env.PATH, DATA_DIR: dataDir, BYBIT_API_KEY_FILE: '/nonexistent/unused' }, timeout: 15000,
-    });
-    assert.match(result.stdout, /VALID/);
+    for (const mode of ['check', 'backup']) {
+      const result = await promisify(execFile)(process.execPath, ['--import', 'tsx', 'src/state-tools.ts', mode], {
+        env: { PATH: process.env.PATH, DATA_DIR: dataDir, BYBIT_API_KEY_FILE: '/nonexistent/unused',
+          PRIVATE_READ_ENABLED: 'true', REAL_EXECUTION_ENABLED: 'true' }, timeout: 15000,
+      });
+      assert.match(result.stdout, /VALID/);
+    }
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });

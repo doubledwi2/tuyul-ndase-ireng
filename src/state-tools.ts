@@ -10,10 +10,6 @@ import { assertNoSecrets, sanitizeError } from './security/secrets.js';
 async function main(): Promise<void> {
   const mode = process.argv[2];
   if (mode !== 'check' && mode !== 'backup') throw new Error('Expected check or backup.');
-  if (mode === 'backup') {
-    const { loadPrivateConfig } = await import('./security/private-config.js');
-    await loadPrivateConfig();
-  }
   const lock = await acquireRuntimeLock(DATA_DIR);
   try {
     const result = await DurablePaperStateStore.open({ dataDir: DATA_DIR });

@@ -1,5 +1,8 @@
 import { performance } from 'node:perf_hooks';
 import { loadExecutionBoundary } from './execution/startup.js';
+import { createPrivateReadClients } from './private-read/startup.js';
+import { PrivateAccountCollector } from './private-read/collector.js';
+import { compareInventory } from './private-read/inventory.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { DATA_DIR, HEALTH_HOST, HEALTH_PORT, LOG_FORMAT, operationalConfigSnapshot } from './config/runtime.js';
@@ -48,8 +51,12 @@ let resources: ResourceMonitor | null = null;
 async function main(): Promise<void> {
   const logger = new Logger('paper-runtime');
   const safety = await loadExecutionBoundary();
+  const privateSetup = await createPrivateReadClients();
+  const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
+    (exchange, error) => logger.warn('private_read_failed', 'Private balance polling failed; paper remains independent.',
+      { exchange, status: error.status, category: error.category }));
   logger.info('execution_safety', `Execution mode: PAPER; Real execution: DISABLED; Kill switch: ${safety.executionKillSwitch ? 'ENABLED' : 'DISABLED'}; Private Bybit credentials configured: ${safety.bybitPrivateCredentialsConfigured ? 'yes' : 'no'}; Private OKX credentials configured: ${safety.okxPrivateCredentialsConfigured ? 'yes' : 'no'}.`, safety);
-  logger.info('effective_config', 'Effective operational config (allowlisted).', { ...operationalConfigSnapshot(), ...safety });
+  logger.info('effective_config', 'Effective operational config (allowlisted).', { ...operationalConfigSnapshot(), ...safety, privateReadEnabled: privateSetup.enabled });
   runtimeLock = await acquireRuntimeLock(DATA_DIR);
   resources = new ResourceMonitor();
   let diskBytes: number | null = await freeDiskBytes(DATA_DIR);
@@ -157,13 +164,15 @@ async function main(): Promise<void> {
 
   const getHealth = () => {
     if (durableStore !== null) updatePersistenceHealth(durableStore.getHealth());
-    return operational.getHealth(paperEngine.getRiskSummary());
+    return { ...operational.getHealth(paperEngine.getRiskSummary()), privateRead: privateCollector.getHealth() };
   };
-  const getMetrics = (): Record<string, unknown> => {
+  const getMetrics = (includeInventory = false): Record<string, unknown> => {
     const health = getHealth();
     const persistence = durableStore?.getHealth();
     const now = Date.now();
     return { ...health, process: resources?.snapshot(),
+      privateReadMetrics: privateCollector.getMetrics(),
+      ...(includeInventory ? { inventoryObservation: compareInventory(privateCollector.getInventory(), paperEngine.getBalances()) } : {}),
       market: { ...health.market, ...operational.heartbeat,
         bybitBookAgeMs: operational.heartbeat.lastBybitBookAt === null ? null : now - operational.heartbeat.lastBybitBookAt,
         okxBookAgeMs: operational.heartbeat.lastOkxBookAt === null ? null : now - operational.heartbeat.lastOkxBookAt },
@@ -178,8 +187,9 @@ async function main(): Promise<void> {
   const healthServer = await startHealthServer({
     host: HEALTH_HOST,
     port: HEALTH_PORT,
-    getHealth, getMetrics,
+    getHealth, getMetrics: () => getMetrics(true),
   });
+  privateCollector.start();
   const healthAddress = healthServer.address();
 
   logger.info('runtime_started', 'Durable virtual paper engine started.', { healthPort: healthAddress.port });
@@ -275,6 +285,7 @@ async function main(): Promise<void> {
     for (const connection of connections) {
       connection.close();
     }
+    await privateCollector.stop();
     await pipeline.flush();
     await paperCoordinator.flush();
     await durableStore?.flush();

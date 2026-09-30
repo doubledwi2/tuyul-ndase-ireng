@@ -11,18 +11,19 @@ import { LatencyPaperTradingEngine } from '../paper/latency-engine.js';
 import type { LatencyPaperExecutionInput } from '../paper/latency-engine.js';
 import { createClientOrderId, validClientOrderId, createOrderIntent, type OrderRequest } from './orders.js';
 
-test('default safety is paper, real disabled, kill switch on, private capabilities false', () => {
+test('default safety is paper; only balance read capability is available', () => {
   assert.deepEqual(parseExecutionSafety({}), { mode: 'paper', realExecutionEnabled: false, killSwitch: true });
   assert.equal(new PaperExecutionAdapter(new LatencyPaperTradingEngine()).mode, 'paper');
   for (const exchange of ['bybit', 'okx'] as const) {
-    assert.deepEqual(EXCHANGE_CAPABILITIES[exchange], { publicMarketData: true, privateRead: false, privateTrade: false, withdrawal: false });
-    assert.throws(() => requirePrivateCapability(exchange, 'privateRead'), ExecutionSafetyError);
+    assert.deepEqual(EXCHANGE_CAPABILITIES[exchange], { publicMarketData: true, privateRead: true, privateTrade: false, withdrawal: false });
+    assert.doesNotThrow(() => requirePrivateCapability(exchange, 'privateRead'));
+    assert.throws(() => requirePrivateCapability(exchange, 'privateTrade'), ExecutionSafetyError);
     assert.throws(() => requirePrivateCapability(exchange, 'withdrawal'), ExecutionSafetyError);
     assert.ok(Object.isFrozen(EXCHANGE_CAPABILITIES[exchange]));
   }
 });
 test('real enable, unknown modes and malformed booleans fail closed', () => {
-  assert.throws(() => parseExecutionSafety({ REAL_EXECUTION_ENABLED: 'true' }), /Real execution is not implemented\/enabled in Phase 4.2\./);
+  assert.throws(() => parseExecutionSafety({ REAL_EXECUTION_ENABLED: 'true' }), /Real execution is not implemented\/enabled in Phase 5.0\./);
   for (const mode of ['real', 'live', 'disabled-live', '', 'PAPER']) assert.throws(() => parseExecutionSafety({ EXECUTION_MODE: mode }));
   for (const value of ['', '1', 'FALSE', 'yes']) assert.throws(() => parseExecutionSafety({ EXECUTION_KILL_SWITCH: value }));
   assert.equal(parseExecutionSafety({ EXECUTION_KILL_SWITCH: 'false' }).realExecutionEnabled, false);
@@ -64,7 +65,7 @@ test('paper startup refuses real mode before network or runtime lock', async () 
     }), (error: unknown) => {
       const failure = error as { code: number; stdout: string; stderr: string };
       assert.equal(failure.code, 1);
-      assert.match(failure.stderr, /Phase 4.2/);
+      assert.match(failure.stderr, /Phase 5.0/);
       assert.doesNotMatch(failure.stdout, /connected|recovery_empty|runtime_started/);
       return true;
     });

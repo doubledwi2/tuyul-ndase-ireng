@@ -1,6 +1,8 @@
 import { performance } from 'node:perf_hooks';
 import { loadExecutionBoundary } from './execution/startup.js';
 import { Logger } from './operations/logger.js';
+import { createPrivateReadClients } from './private-read/startup.js';
+import { PrivateAccountCollector } from './private-read/collector.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { CLOCK_JUMP_THRESHOLD_MS } from './config/timing.js';
@@ -23,7 +25,11 @@ import {
 import { ClockHealthMonitor } from './timing/clock-health.js';
 
 const safety = await loadExecutionBoundary();
-new Logger('market-runtime').info('execution_safety', 'Public market data; real execution DISABLED.', safety);
+const privateSetup = await createPrivateReadClients();
+const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
+  (exchange, error) => new Logger('private-read').warn('private_read_failed', 'Private balance polling failed.',
+    { exchange, status: error.status, category: error.category }));
+new Logger('market-runtime').info('execution_safety', 'Public market data; real execution DISABLED.', { ...safety, privateReadEnabled: privateSetup.enabled });
 
 const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;
@@ -60,6 +66,7 @@ const connections: ExchangeConnection[] = [
   connectBybit(receiveOrderBook),
   connectOkx(receiveOrderBook),
 ];
+privateCollector.start();
 
 const outputTimer = setInterval(() => {
   const snapshot = pipeline.getLatestDepthSnapshot();
@@ -76,6 +83,8 @@ const outputTimer = setInterval(() => {
 
 const metricsTimer = setInterval(() => {
   printMetricsSummary(pipeline.getMetricsSummary());
+  new Logger('private-read').info('private_read_summary', 'Private read diagnostics (no balances).',
+    { health: privateCollector.getHealth(), metrics: privateCollector.getMetrics() });
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
@@ -92,6 +101,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   for (const connection of connections) {
     connection.close();
   }
+  await privateCollector.stop();
 
   printMetricsSummary(pipeline.getMetricsSummary());
 

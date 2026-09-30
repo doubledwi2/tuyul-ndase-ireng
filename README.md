@@ -1,23 +1,27 @@
 # tuyul-ndase-ireng
 
-Durable Paper Trading Engine v0.4.2 adalah Phase 4.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Authenticated Read-Only Integration v0.5.0 adalah Phase 5.0 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
-Aplikasi ini tidak memakai API key sungguhan, autentikasi exchange, private endpoint, atau real order. Phase 4.2 DOES NOT enable real trading. Konfigurasi credential hanya boundary validasi lokal untuk persiapan, diuji dengan dummy values. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint dan journal lokal, sementara transition per-run tetap ditulis sebagai JSONL. Tidak ada account exchange, transfer asset, withdrawal, atau database production. Istilah executable dan qualified hanya menggambarkan hasil simulasi serta kualitas observasi, bukan jaminan real fill.
+Aplikasi kini mendukung authenticated private **READ ONLY**, opt-in, hanya balance BTC/USDT Bybit UNIFIED dan OKX trading account. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
 
-### Phase 4.2 execution safety
+### Phase 5.0 private-read dan execution safety
 
-`src/execution/` memisahkan adapter dari public market data. `PaperExecutionAdapter` membungkus engine dua-leg yang ada dan mempertahankan readiness/risk checks. `DisabledLiveExecutionAdapter` selalu melempar safety error pada submit/cancel/status; approval live selalu false. Capability Bybit/OKX hanya mengizinkan public market data dan tidak dapat diubah lewat environment.
+`src/private-read/` terpisah dari public WebSocket dan execution adapter. Capability immutable: publicMarketData=true, privateRead=true, privateTrade=false, withdrawal=false. `DisabledLiveExecutionAdapter` tetap menolak seluruh submit/cancel/status; approval live selalu false. Tidak ada override capability lewat environment.
 
-Default: `EXECUTION_MODE=paper`, `REAL_EXECUTION_ENABLED=false`, `EXECUTION_KILL_SWITCH=true`. Nilai mode lain ditolak; real-enabled true menggagalkan startup sebelum WebSocket dengan pesan “Real execution is not implemented/enabled in Phase 4.2.” Kill switch off tetap tidak mengaktifkan private execution.
+Default: `PRIVATE_READ_ENABLED=false`, `EXECUTION_MODE=paper`, `REAL_EXECUTION_ENABLED=false`, `EXECUTION_KILL_SWITCH=true`. Default tidak mengirim authenticated request. Real-enabled true menggagalkan startup sebelum WebSocket. Kill switch off tetap tidak mengaktifkan real execution.
 
-Nama future credential: `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, masing-masing mendukung `_FILE`. Set parsial, nilai kosong/whitespace, dan direct+FILE bersamaan ditolak. Secret file Unix harus owner-readable tanpa akses group/other; gunakan 0400/0600. Jangan gunakan credential sungguhan pada fase ini.
+Credential: `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, masing-masing mendukung `_FILE`. Set parsial, nilai kosong/whitespace, dan direct+FILE bersamaan ditolak. Aktifkan PRIVATE_READ_ENABLED hanya dengan kedua set lengkap dan key minimum-permission read/account-only, tanpa trade/withdraw. File Unix gunakan 0400/0600. Balance call sukses tidak membuktikan key bebas trading permission.
 
-Secret wrapper menyembunyikan nilai dari JSON/inspect. Logger/error/HTTP output meredaksi exact configured values; checkpoint, journal, paper event, recovery dan backup menolak payload yang mengandung nilai tersebut. Config snapshot hanya mencatat credential-configured booleans. Replay, soak, dan state-check tidak memuat private credentials.
+Secret wrapper menyembunyikan nilai dari JSON/inspect. Native REST error/body/header tidak diteruskan ke log. Config snapshot hanya mencatat credential-configured booleans. Replay, soak, state-check, backup dan secret-scan tidak memuat private credentials. State paper tidak memuat real balance atau auth material.
+
+Hanya GET wallet-balance Bybit dan account/balance OKX diizinkan. HTTPS host/path allowlist, redirect ditolak, timeout 3 detik termasuk body, limit 1 MiB, maksimum satu retry dengan backoff 500 ms, interval poll 10 detik. `/health` menampilkan private-read health tanpa balance. `/metrics` mencakup counters dan **diagnostic only** real-minus-paper inventory differences; lindungi endpoint ini karena selisih dapat mengungkap informasi finansial. Private-read failure tidak memblokir readiness paper. Lihat [PRIVATE_READ.md](docs/PRIVATE_READ.md) untuk regional domains, semantics balance, timestamp, permission, privacy, dan konfigurasi.
 
 ```sh
 npm run build
 npm run execution:check
 npm run secret:scan
+# Opsional: hanya setelah PRIVATE_READ_ENABLED=true dan _FILE dikonfigurasi
+npm run account:check
 ```
 
 Scanner secret bersifat heuristic, bukan jaminan bebas kebocoran; tidak memasang Git hook. Baca [SECURITY_BOUNDARY.md](docs/SECURITY_BOUNDARY.md) untuk model capability, OrderIntent/clientOrderId, batas redaction, dan desain systemd credential.
@@ -179,7 +183,7 @@ Paper mode diaktifkan secara eksplisit dan tidak berjalan pada `npm run dev`:
 npm run paper
 ```
 
-Mode ini tetap hanya membuka public WebSocket Bybit dan OKX. Tidak ada jalur kode untuk credential, private endpoint, atau pengiriman order. Saldo awal virtual di `src/config/paper.ts` adalah baseline engineering, bukan rekomendasi modal:
+Secara default mode ini hanya membuka public WebSocket Bybit dan OKX. Opt-in private REST hanya mengobservasi balance dan tidak mengirim order atau mengubah paper inventory. Saldo awal virtual di `src/config/paper.ts` adalah baseline engineering, bukan rekomendasi modal:
 
 | Exchange | BTC | USDT |
 |---|---:|---:|
@@ -567,8 +571,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 3.2 inventory, rebalancing suggestion, dan risk limits: complete.
 - Phase 4.0 durable state, crash recovery, dan operational hardening: complete.
 - Phase 4.1 long-run operations, VPS deployment, dan observability: complete.
-- Phase 4.2 execution safety, secret boundary, dan adapter abstraction: current.
+- Phase 4.2 execution safety, secret boundary, dan adapter abstraction: complete.
+- Phase 5.0 authenticated private read-only account integration: current.
 
-## Scope Phase 4.2
+## Scope Phase 5.0
 
-Scope versi ini menambahkan execution adapter abstraction, credential validation lokal, secret redaction, immutable private capability guard, dan fail-closed startup di atas foundation durability/operasi Phase 4.0–4.1. Tidak ada real order execution, automatic transfer, private API/WebSocket call, API key sungguhan, exchange authentication, real balance, withdrawal, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan dua authenticated GET balance endpoint, normalization, memory-only collector, private-read health/metrics, dan diagnostic real-vs-paper inventory. Tidak ada real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.

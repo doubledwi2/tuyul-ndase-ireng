@@ -16,6 +16,8 @@ export class SecretString {
   }
 
   get configured(): boolean { return this.#value.length > 0; }
+  // Explicit, narrowly used by balance signing. Never pass a logger here.
+  use<T>(consumer: (value: string) => T): T { return consumer(this.#value); }
   toJSON(): string { return REDACTED; }
   toString(): string { return REDACTED; }
   [inspect.custom](): string { return REDACTED; }
