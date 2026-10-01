@@ -1,10 +1,10 @@
 # tuyul-ndase-ireng
 
-Authenticated Read-Only Integration v0.5.0 adalah Phase 5.0 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Read-Only Account Reconciliation v0.5.1 adalah Phase 5.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
-Aplikasi kini mendukung authenticated private **READ ONLY**, opt-in, hanya balance BTC/USDT Bybit UNIFIED dan OKX trading account. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
+Aplikasi mendukung authenticated private **READ ONLY**, opt-in: balance BTC/USDT, permission inspection, account config, dan observed spot fee. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance/config/fee tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
 
-### Phase 5.0 private-read dan execution safety
+### Phase 5.1 private-read dan execution safety
 
 `src/private-read/` terpisah dari public WebSocket dan execution adapter. Capability immutable: publicMarketData=true, privateRead=true, privateTrade=false, withdrawal=false. `DisabledLiveExecutionAdapter` tetap menolak seluruh submit/cancel/status; approval live selalu false. Tidak ada override capability lewat environment.
 
@@ -14,7 +14,11 @@ Credential: `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `OKX_API_KEY`, `OKX_API_SECRET`
 
 Secret wrapper menyembunyikan nilai dari JSON/inspect. Native REST error/body/header tidak diteruskan ke log. Config snapshot hanya mencatat credential-configured booleans. Replay, soak, state-check, backup dan secret-scan tidak memuat private credentials. State paper tidak memuat real balance atau auth material.
 
-Hanya GET wallet-balance Bybit dan account/balance OKX diizinkan. HTTPS host/path allowlist, redirect ditolak, timeout 3 detik termasuk body, limit 1 MiB, maksimum satu retry dengan backoff 500 ms, interval poll 10 detik. `/health` menampilkan private-read health tanpa balance. `/metrics` mencakup counters dan **diagnostic only** real-minus-paper inventory differences; lindungi endpoint ini karena selisih dapat mengungkap informasi finansial. Private-read failure tidak memblokir readiness paper. Lihat [PRIVATE_READ.md](docs/PRIVATE_READ.md) untuk regional domains, semantics balance, timestamp, permission, privacy, dan konfigurasi.
+Tepat tujuh GET endpoint diizinkan melalui typed request kind, tanpa arbitrary path. HTTPS host/path allowlist, redirect ditolak, timeout 3 detik termasuk body, limit 1 MiB, maksimum satu retry dengan backoff 500 ms. Satu antrean serial per exchange memprioritaskan balance (10 detik); fee/config/permission dibaca setiap 5 menit. Freshness baseline: balance 30 detik, kategori lain 15 menit. `/health` tidak mengandung balance atau UID/IP/KYC/note/label. `/metrics` memuat diagnostik fee/inventory/funding yang sensitif; lindungi endpoint loopback. Private-read failure atau unsafe key tidak memblokir paper.
+
+`ACCOUNT_FEE_MODE=diagnostic` adalah satu-satunya mode. Fee config paper tetap authoritative; observed account fee tidak diinjeksikan ke engine. OKX negative rate berarti biaya, positive berarti rebate: normalized cost membalik tanda, bukan absolute value. Selisih >0.0002 (2 bps) menghasilkan FEE_MODEL_MISMATCH, bukan perubahan trade gating. Permission dinilai SAFE_READ_ONLY / UNSAFE_WRITE_ENABLED / UNKNOWN; unknown/stale tidak dianggap aman. Read-only requests tetap boleh berjalan dengan key berpermission berlebih, tetapi menghasilkan warning dan status review.
+
+Reconciliation membandingkan total real terhadap paper available+reserved, serta mengecek funding target melalui available real balance dan fresh depth/fee. Availability null bukan nol atau total spendable. Bybit account-info tidak cukup membuktikan spot cash-only semantics, sehingga baseline kompatibilitas UTA biasa adalah UNKNOWN; `account:check` akan exit nonzero sampai ketidakpastian ini terselesaikan dalam scope yang sesuai. Status `readOnlyObservationSafe` bukan approval trading. Detail endpoint, konservatisme, dan batas model: [PRIVATE_READ.md](docs/PRIVATE_READ.md).
 
 ```sh
 npm run build
@@ -572,8 +576,10 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 4.0 durable state, crash recovery, dan operational hardening: complete.
 - Phase 4.1 long-run operations, VPS deployment, dan observability: complete.
 - Phase 4.2 execution safety, secret boundary, dan adapter abstraction: complete.
-- Phase 5.0 authenticated private read-only account integration: current.
+- Phase 5.0 authenticated private read-only account integration: complete.
+- Phase 5.1 read-only account reconciliation and fee diagnostics: current.
+- Phase 5.2 possible next: paper fee calibration / real-account shadow mode, bukan real orders; belum diimplementasikan.
 
-## Scope Phase 5.0
+## Scope Phase 5.1
 
-Scope versi ini menambahkan dua authenticated GET balance endpoint, normalization, memory-only collector, private-read health/metrics, dan diagnostic real-vs-paper inventory. Tidak ada real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan tujuh typed authenticated GET reads, permission/config safety, observed fee normalization, scheduler/cache per read kind, dan real-vs-paper inventory/funding diagnostics. Tidak ada dynamic fee injection, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.

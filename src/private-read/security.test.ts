@@ -17,8 +17,9 @@ import { BybitReadOnlyClient } from './bybit.js';
 import { OkxReadOnlyClient } from './okx.js';
 import { PrivateAccountCollector } from './collector.js';
 import { balanceUrl } from './config.js';
-import { bybitFixture, okxFixture } from './fixtures.js';
+import { fixtureForKind } from './fixtures.js';
 import type { ReadOnlyHttpTransport } from './transport.js';
+import { accountCheckSummary } from './check-summary.js';
 
 test('fake authenticated reads: logs/health/metrics/state/backup never contain secrets, signatures or raw account data', async () => {
   const fake = (part: string) => ['FAKE', part, 'SECRET', '987654321'].join('_');
@@ -32,7 +33,13 @@ test('fake authenticated reads: logs/health/metrics/state/backup never contain s
       forbidden.push(headers['X-BAPI-SIGN'] ?? headers['OK-ACCESS-SIGN']!);
       if (failure) throw new Error(JSON.stringify(headers));
     });
-    return { receivedAt: now, payload: request.exchange === 'bybit' ? bybitFixture() : okxFixture() };
+    const payload = fixtureForKind(request.kind!);
+    const metadata = { apiKey: fake('KEYB'), userID: 'user-marker-8765123', uid: 'uid-marker-8765123',
+      ips: ['198.51.100.82'], ip: '198.51.100.82', kycRegion: 'region-marker-8765123', note: 'note-marker-8765123', label: 'label-marker-8765123' };
+    forbidden.push(metadata.userID, metadata.uid, metadata.ip, metadata.kycRegion, metadata.note, metadata.label);
+    if ('result' in payload) Object.assign(payload.result, metadata);
+    if ('data' in payload) Object.assign(payload.data[0]!, metadata);
+    return { receivedAt: now, payload };
   } };
   const bybit = new BybitReadOnlyClient(credentials.BYBIT_API_KEY!, credentials.BYBIT_API_SECRET!,
     { enabled: true, url: balanceUrl('bybit', 'https://api.bybit.com'), transport, monotonicNow: () => now, sleep: async () => {} });
@@ -47,7 +54,13 @@ test('fake authenticated reads: logs/health/metrics/state/backup never contain s
   const dataDir = await mkdtemp(join(tmpdir(), 'tuyul-private-boundary-'));
   try {
     const engine = new LatencyPaperTradingEngine(); const before = engine.exportState();
-    await collector.pollOnce(); assert.equal(collector.getHealth().diagnosticReady, true);
+    await collector.pollOnce(); assert.equal(collector.getHealth().bybit.credentialSafety.status, 'SAFE_READ_ONLY');
+    assert.equal(collector.getHealth().okx.credentialSafety.status, 'SAFE_READ_ONLY');
+    for (const view of [collector.getSafetySummary(), accountCheckSummary(collector, [bybit, okx]), collector.getFeeDiagnostic()]) {
+      const text = safeJson(view);
+      for (const value of forbidden) assert.ok(!text.includes(value), 'Private metadata escaped normalized projection');
+      assert.doesNotMatch(text, /"(?:apiKey|userID|uid|ips|ip|kycRegion|note|label)":/);
+    }
     const operational = new OperationalStateManager();
     const base = operational.getHealth(engine.getRiskSummary());
     const healthy = { ...base, privateRead: collector.getHealth() };

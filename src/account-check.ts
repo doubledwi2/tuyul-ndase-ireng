@@ -1,21 +1,18 @@
 import { createPrivateReadClients } from './private-read/startup.js';
-import { safeFailure } from './private-read/types.js';
+import { PrivateAccountCollector } from './private-read/collector.js';
+import { accountCheckSummary } from './private-read/check-summary.js';
 import { safeJson } from './security/secrets.js';
 
 async function main() {
   const { enabled, clients } = await createPrivateReadClients();
   if (!enabled) throw new Error('PRIVATE_READ_ENABLED must be true.');
-  await Promise.all(clients.map(async client => {
-    try {
-      const snapshot = await client.readBalance();
-      console.log(safeJson({ exchange: client.exchange, btc: 'read OK', usdt: 'read OK',
-        snapshotAgeMs: Math.max(0, Date.now() - snapshot.receivedAt), permissionsVerified: false }));
-    } catch (error) {
-      const failure = safeFailure(error);
-      console.error(safeJson({ exchange: client.exchange, category: failure.category, status: failure.status }));
-      process.exitCode = 1;
-    } finally { client.stop(); }
-  }));
+  const collector = new PrivateAccountCollector(enabled, clients);
+  try {
+    await collector.pollOnce();
+    const result = accountCheckSummary(collector, clients);
+    for (const summary of result.summaries) console.log(safeJson(summary));
+    process.exitCode = result.exitCode;
+  } finally { await collector.stop(); }
 }
 main().catch(() => {
   console.error('Account check configuration invalid: require PRIVATE_READ_ENABLED=true and complete credentials for both exchanges. No values displayed.');

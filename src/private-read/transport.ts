@@ -1,15 +1,15 @@
-import { MAX_RESPONSE_BYTES, PRIVATE_READ_TIMEOUT_MS, validateBalanceUrl } from './config.js';
+import { MAX_RESPONSE_BYTES, PRIVATE_READ_TIMEOUT_MS, validateReadUrl, balanceKind, type RequestKind } from './config.js';
 import type { BalanceAuthHeaders } from './signing.js';
 import { PrivateReadError, safeFailure, type Exchange } from './types.js';
 
-export interface BalanceRequest { exchange: Exchange; url: string; headers: BalanceAuthHeaders }
+export interface BalanceRequest { exchange: Exchange; kind?: RequestKind; url: string; headers: BalanceAuthHeaders }
 export interface BalanceResponse { payload: unknown; receivedAt: number }
 export interface ReadOnlyHttpTransport { get(request: BalanceRequest): Promise<BalanceResponse> }
 
 export class FetchReadOnlyHttpTransport implements ReadOnlyHttpTransport {
   constructor(private readonly fetcher: typeof fetch = fetch, private readonly timeoutMs = PRIVATE_READ_TIMEOUT_MS) {}
   async get(request: BalanceRequest): Promise<BalanceResponse> {
-    validateBalanceUrl(request.exchange, request.url);
+    validateReadUrl(request.exchange, request.kind ?? balanceKind(request.exchange), request.url);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {

@@ -1,6 +1,6 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "BTC/USDT scanner with durable virtual paper execution",
   "type": "module",

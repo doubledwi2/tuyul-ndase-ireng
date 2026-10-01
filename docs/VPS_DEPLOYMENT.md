@@ -68,9 +68,9 @@ Compaction occurs only after a durable checkpoint. Sequences stay monotonic acro
 
 See [time discipline](TIME_SYNC.md). systemd behavior reference: [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html).
 
-## Phase 5.0 read-only credential delivery boundary
+## Phase 5.1 read-only credential delivery boundary
 
-Keep `/etc/tuyul-paper.env` limited to non-secret operational settings, including `EXECUTION_MODE=paper`, `REAL_EXECUTION_ENABLED=false`, `EXECUTION_KILL_SWITCH=true`, and default `PRIVATE_READ_ENABLED=false`. Phase 5.0 optionally enables authenticated balance reads, never real execution. Read the [security boundary](SECURITY_BOUNDARY.md) and [private-read guide](PRIVATE_READ.md); use dummy files for setup tests.
+Keep `/etc/tuyul-paper.env` limited to non-secret operational settings, including `EXECUTION_MODE=paper`, `REAL_EXECUTION_ENABLED=false`, `EXECUTION_KILL_SWITCH=true`, and default `PRIVATE_READ_ENABLED=false`. Phase 5.1 optionally enables authenticated balance, permission, config and fee reads, never real execution. Read the [security boundary](SECURITY_BOUNDARY.md) and [private-read guide](PRIVATE_READ.md); use dummy files for setup tests.
 
 For credential delivery, a systemd drop-in can map protected source files to the app's `_FILE` inputs. Enabled collection requires complete sets for both exchanges; the following conceptual fragment covers Bybit only and needs the analogous OKX entries:
 
@@ -86,4 +86,4 @@ For OKX use three analogous credentials mapped to `OKX_API_KEY_FILE`, `OKX_API_S
 
 systemd supports the `%d` credential-directory specifier in unit Environment entries; do not expect expansion in an EnvironmentFile. See the [official systemd credential documentation](https://systemd.io/CREDENTIALS/). On a host without credential support, a separate root-owned 0600 EnvironmentFile is a fallback, with environment-inheritance limitations. Never commit that file. Run `systemd-analyze verify` on the target unit/drop-in; start with dummy values and PRIVATE_READ_ENABLED=false.
 
-After build, `npm run execution:check` performs presence/shape checks locally; it does not authenticate, sign or contact an exchange. `account:check` authenticates only when PRIVATE_READ_ENABLED=true and both credential sets exist. Use minimum-permission read-only keys, never trade/withdraw. Supplying credentials or disabling the kill switch never enables real execution. `npm run secret:scan` can be part of an optional operator-managed pre-commit check.
+After build, `npm run execution:check` performs presence/shape checks locally; it does not authenticate, sign or contact an exchange. `account:check` authenticates only when PRIVATE_READ_ENABLED=true and both credential sets exist. It exits nonzero for unsafe/unknown permissions, unsupported/unverified account semantics, or failed/stale required reads. Use minimum-permission read-only keys, never trade/withdraw. Supplying credentials or disabling the kill switch never enables real execution. `npm run secret:scan` can be part of an optional operator-managed pre-commit check.

@@ -9,7 +9,7 @@ import { PrivateAccountCollector } from './collector.js';
 import { balanceUrl, PRIVATE_BALANCE_POLL_INTERVAL_MS, PRIVATE_READ_RETRY_DELAY_MS } from './config.js';
 import { signBybitBalance, signOkxBalance } from './signing.js';
 import { PrivateReadError } from './types.js';
-import { bybitFixture, okxFixture } from './fixtures.js';
+import { bybitFixture, fixtureForKind } from './fixtures.js';
 import { createPrivateReadClients } from './startup.js';
 import { compareInventory } from './inventory.js';
 import { LatencyPaperTradingEngine } from '../paper/latency-engine.js';
@@ -85,21 +85,22 @@ test('collector isolates failures, degrades after five, deduplicates polls, reco
   let now = 100, fail = true;
   const warnings: unknown[] = [];
   const bybit = new BybitReadOnlyClient(key, secret, { enabled: true, url, monotonicNow: () => now,
-    transport: { get: async () => {
-      if (fail) throw new PrivateReadError('HTTP', 401);
-      return { payload: bybitFixture(), receivedAt: now };
+    sleep: async () => {}, transport: { get: async request => {
+      if (fail && request.kind === 'BYBIT_BALANCE') throw new PrivateReadError('HTTP', 401);
+      return { payload: fixtureForKind(request.kind!), receivedAt: now };
     } } });
   const okx = new OkxReadOnlyClient(key, secret, pass, { enabled: true, url: balanceUrl('okx', 'https://openapi.okx.com'),
-    monotonicNow: () => now, transport: { get: async () => ({ payload: okxFixture(), receivedAt: now }) } });
+    monotonicNow: () => now, sleep: async () => {}, transport: { get: async request => ({ payload: fixtureForKind(request.kind!), receivedAt: now }) } });
   const collector = new PrivateAccountCollector(true, [bybit, okx], (...args) => { warnings.push(args); }, () => now);
-  for (let i = 0; i < 5; i++) { const p = collector.pollOnce(); assert.equal(p, collector.pollOnce()); await p; now += 10_000; }
+  for (let i = 0; i < 5; i++) { await Promise.all([collector.pollOnce(), collector.pollOnce()]); now += 10_000; }
   assert.equal(collector.getHealth().bybitDegraded, true); assert.equal(collector.getHealth().okxHealthy, true);
   assert.equal(warnings.length, 2); assert.equal(collector.getHealth().diagnosticReady, false);
-  fail = false; await collector.pollOnce(); assert.equal(collector.getHealth().diagnosticReady, true);
+  fail = false; await collector.pollOnce(); assert.equal(collector.getHealth().bybitHealthy, true);
+  assert.equal(collector.getHealth().bybit.credentialSafety.status, 'SAFE_READ_ONLY');
   const copy = collector.getInventory(); copy.bybit!.btc.total = 0;
   assert.equal(collector.getInventory().bybit!.btc.total, 1.25);
-  now += 20_001; assert.equal(collector.getHealth().bybitHealthy, false);
-  await collector.stop(); await collector.pollOnce(); assert.equal(bybit.getMetrics().privateReadRequests, 6);
+  now += 30_001; assert.equal(collector.getHealth().bybitHealthy, false);
+  await collector.stop(); await collector.pollOnce(); assert.equal(bybit.getMetrics().byKind.BYBIT_BALANCE!.privateReadRequests, 6);
 });
 test('inventory observation includes reservations and does not mutate paper; disabled collector remains inert', async () => {
   const engine = new LatencyPaperTradingEngine();
@@ -111,14 +112,16 @@ test('inventory observation includes reservations and does not mutate paper; dis
   assert.equal(diff.bybitBtcDifference, 0.8); assert.equal(diff.okxBtcDifference, null); assert.equal(diff.label, 'diagnostic only');
   assert.deepEqual(engine.exportState(), before); assert.equal(collector.getHealth().enabled, false);
 });
-test('static production boundary: only two approved endpoint paths, no mutable HTTP methods or private WS', async () => {
+test('static production boundary: exactly seven approved endpoint paths, no write references or private WS', async () => {
   let all = '';
   for (const name of await readdir('src/private-read')) {
     if (!name.endsWith('.ts') || name.endsWith('.test.ts')) continue;
     all += await readFile(`src/private-read/${name}`, 'utf8');
   }
   const paths = [...all.matchAll(/\/(?:api\/)?v5\/[a-zA-Z0-9/_-]+/g)].map(match => match[0]);
-  assert.deepEqual([...new Set(paths)].sort(), ['/api/v5/account/balance', '/v5/account/wallet-balance']);
+  assert.deepEqual([...new Set(paths)].sort(), ['/api/v5/account/balance', '/api/v5/account/config', '/api/v5/account/trade-fee',
+    '/v5/account/fee-rate', '/v5/account/info', '/v5/account/wallet-balance', '/v5/user/query-api']);
+  assert.doesNotMatch(all, /\/(?:order|cancel|amend|withdraw|transfer)(?:[/?'"`]|$)|\/set-/);
   assert.doesNotMatch(all, /\b(?:POST|DELETE|PATCH|PUT)\b|wss?:\/\/|WebSocket/);
   assert.equal((all.match(/method: 'GET'/g) ?? []).length, 1);
 });

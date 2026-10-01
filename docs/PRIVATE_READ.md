@@ -1,30 +1,94 @@
-# Phase 5.0: authenticated account reads, never real execution
+# Phase 5.1 — read-only account reconciliation and fee diagnostics
 
-Public WebSocket adapters are unchanged. The separate `src/private-read/` clients support exactly:
+Real execution remains disabled. Public market data adapters and paper economics are unchanged. Private reads are opt-in (`PRIVATE_READ_ENABLED=false` by default), memory-only, and never authorize orders. Capabilities remain publicMarketData/privateRead=true, privateTrade/withdrawal=false. The disabled live adapter rejects every operation, including order status. No method other than GET exists in the private-read transport.
 
-| Exchange | Method and fixed request | Authentication |
-| --- | --- | --- |
-| Bybit | GET `/v5/account/wallet-balance?accountType=UNIFIED&coin=BTC,USDT` | HMAC-SHA256, lowercase hex; timestamp + API key + receive window 5000 + exact query |
-| OKX | GET `/api/v5/account/balance?ccy=BTC,USDT` | HMAC-SHA256, base64; ISO UTC timestamp + GET + exact path/query; key and passphrase headers |
+## Exact authenticated allowlist
 
-No other path, arbitrary signing input, request body, mutable HTTP method, private WebSocket, real order submission/cancellation/amendment, transfer or withdrawal is implemented. Bybit system-generated HMAC keys only; RSA keys are unsupported. Signing lives separately from the transport. The immutable capability registry permits publicMarketData/privateRead, never privateTrade/withdrawal. The live execution adapter still throws on **every** method, including order status. `REAL_EXECUTION_ENABLED=true` still fails startup; turning the kill switch off cannot enable real execution.
+| Typed request kind | Fixed GET path and query |
+| --- | --- |
+| BYBIT_BALANCE | `/v5/account/wallet-balance?accountType=UNIFIED&coin=BTC,USDT` |
+| BYBIT_FEE_RATE | `/v5/account/fee-rate?category=spot&symbol=BTCUSDT` |
+| BYBIT_ACCOUNT_INFO | `/v5/account/info` |
+| BYBIT_API_KEY_INFO | `/v5/user/query-api` |
+| OKX_BALANCE | `/api/v5/account/balance?ccy=BTC,USDT` |
+| OKX_ACCOUNT_CONFIG | `/api/v5/account/config` |
+| OKX_TRADE_FEE | `/api/v5/account/trade-fee?instType=SPOT&instId=BTC-USDT` |
 
-## Official documentation audit
+Signers accept a typed request kind, never a caller-provided path or method. Runtime validation rejects unknown or cross-exchange kinds. Bybit HMAC-SHA256 hex signs timestamp + API key + 5000 receive window + exact query (empty for info/query-api). Thus those two queryless Bybit requests intentionally have the same signature at the same timestamp; the exact path is enforced by the transport. OKX HMAC-SHA256 base64 signs ISO timestamp + GET + exact path/query. Retries re-sign. Bybit RSA keys and OKX simulated-account mode are not supported.
 
-Audited 2026-09-30: [Bybit V5 authentication](https://bybit-exchange.github.io/docs/v5/guide#authentication), [wallet balance](https://bybit-exchange.github.io/docs/v5/account/wallet-balance), [OKX REST authentication](https://www.okx.com/docs-v5/en/#overview-rest-authentication), [OKX account balance](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-balance), and [OKX REST domain announcement](https://www.okx.com/docs-v5/log_en/#2026-05-20).
+There are no create/cancel/amend/transfer/withdraw requests, configuration setters, permission changes, or private trading WebSockets.
 
-`BYBIT_API_BASE_URL` defaults to `https://api.bybit.com`. Supported hosts: `api.bybit.com`, `api.bytick.com`, `api-testnet.bybit.com`. Other Bybit regional domains are deliberately not supported in this release: do not use a global host to circumvent account/geographic restrictions. Testnet needs a matching testnet key; it still only reads balances.
+## Domains and transport
 
-`OKX_API_BASE_URL` defaults to `https://openapi.okx.com` for a **global account assumption**, not for every account. Allowed hosts: `openapi.okx.com`, `www.okx.com`, `us.okx.com`, `eea.okx.com`, `tr.okx.com`. OKX recommends openapi for global REST; www remains supported. US/Australia accounts registered through app.okx.com require us.okx.com; EU accounts registered through my.okx.com require eea.okx.com. Türkiye operators must use the matching regional account documentation/domain. No automatic region fallback or credential forwarding between domains. OKX demo/simulated-account mode is not implemented.
+Defaults: BYBIT_API_BASE_URL=https://api.bybit.com; OKX_API_BASE_URL=https://openapi.okx.com (global-account assumption).
+Bybit supported hosts: api.bybit.com, api.bytick.com, api-testnet.bybit.com. Other Bybit regional accounts are unsupported; do not bypass regional restrictions.
+OKX hosts: openapi.okx.com, www.okx.com, us.okx.com, eea.okx.com, tr.okx.com. US/Australia app.okx.com accounts require us.okx.com; EU my.okx.com accounts require eea.okx.com; Türkiye operators must follow matching regional documentation. There is no automatic fallback between domains.
 
-Only exact HTTPS origins (optional trailing slash) are accepted. Credentials/userinfo, explicit ports, extra paths, encoded paths, query, fragment, whitespace, localhost and custom hosts fail closed. The transport checks the final exact URL again before accessing headers. Redirect following is disabled (`redirect: 'error'`).
+Origins must match exactly, HTTPS only, optional trailing slash; no userinfo, explicit ports, encoded/extra paths, query, fragment, whitespace or localhost. Every final URL is checked against kind + exchange + host + exact path/query. Redirects are rejected. Timeout is 3000 ms per attempt, including body reading; maximum JSON body is 1 MiB including streamed responses without Content-Length. Native errors, headers and bodies never escape as diagnostics.
 
-## Opt in and minimum permission
+## Permission introspection
 
-Default `PRIVATE_READ_ENABLED=false` causes **zero authenticated requests**, even with configured keys. Enable only deliberately with complete credentials for both exchanges. Partial sets, missing sets when enabled, invalid booleans and ambiguous direct/FILE values fail startup. No automatic .env loading; use a protected service environment. This example contains paths only:
+`CredentialSafetyAssessment` contains exchange, SAFE_READ_ONLY / UNSAFE_WRITE_ENABLED / UNKNOWN, fixed diagnostic reasons and checkedAt. Unknown schema throws SCHEMA; the collector presents UNKNOWN, retains the old normalized snapshot, and exposes failed refresh/freshness separately.
+
+Bybit requires readOnly=1 **and** absence of explicit write scopes. SpotTrade, wallet transfer scopes and Withdraw each generate independent reasons; readOnly=0 adds BYBIT_KEY_NOT_READ_ONLY. Other known write scopes are also unsafe. Unknown permission groups/values fail closed. This intentionally conservative policy flags arrays even when readOnly=1 may restrict their effective use: it is a review signal, not proof a write request would succeed. Derived read-only/trade/transfer/withdraw booleans and ipBound are the only retained key metadata.
+
+OKX perm is parsed as a comma-separated set of read_only/trade/withdraw. Trade or withdraw makes the diagnostic unsafe. Unknown tokens fail schema; no permission is inferred from balance success. IP information becomes a boolean (or null if unavailable); addresses are discarded.
+
+An over-permissioned key can continue these allowlisted reads: warn on transitions, show REVIEW_REQUIRED/unsafe, keep paper operational, never attempt to modify permissions. Use minimum-permission read/account-only keys with IP restrictions where supported. No future live approval is granted; real execution stays impossible regardless of diagnostic status.
+
+## Account compatibility
+
+Bybit stores only unifiedMarginStatus, marginMode, spotHedgingStatus, updatedTime. Classic account, portfolio margin or enabled spot hedging is INCOMPATIBLE for the current assumptions. Known UTA regular/isolated modes are **UNKNOWN**, not automatically cash-only: account-info cannot prove absence of spot borrowing/liabilities. This deliberate limitation means current Bybit data cannot produce a fully SAFE overall observation summary, and account:check returns nonzero for this uncertainty. Do not add an unapproved endpoint to work around it.
+
+OKX stores accountLevel, positionMode, autoBorrowEnabled and spotBorrowEnabled. COMPATIBLE requires spot level 1, net_mode, and both borrowing flags explicitly false. Other recognized levels/modes or enabled borrowing are INCOMPATIBLE; missing borrowing flags are UNKNOWN. Unrecognized enums/types fail schema. Compatibility is a narrow diagnostic, not a guarantee of fee-currency behavior, fillability, funding availability or trading readiness.
+
+## Fee model and normalization
+
+`AccountFeeSnapshot` contains exchange, BTC/USDT, ACCOUNT_PRIVATE_READ, maker/taker `{rawRate, normalizedCostRate}`, receivedAt and nullable sourceUpdatedAt. Decimal rates must be finite, at most 32 characters and within a conservative absolute 5% bound. No exponent, NaN, empty string or numeric JSON value is accepted.
+
+Bybit uses positive cost rates directly; negative Bybit values are unsupported/fail closed in this baseline rather than assigned unverified rebate semantics. Exact spot category and BTCUSDT symbol are required.
+
+OKX negative maker/taker means commission, positive means rebate. `normalizeOkxFeeRate()` uses cost = -raw numeric rate; zero remains zero. Example: -0.001 -> +0.001 cost; +0.0002 -> -0.0002 rebate. It does not use absolute value. The exact BTC-USDT request must return one applicable feeGroup with maker/taker. Multiple/absent groups fail closed; deprecated top-level rates are not fallback guesses. No extra instruments endpoint is called. Exchange promotions/zero-fee exceptions may not be reflected in this API, so observed fee is not a guarantee of the eventual charged fee.
+
+Bybit envelope time and OKX fee ts are response/return times, not documented fee update timestamps: sourceUpdatedAt stays null. Local receivedAt is recorded after body receipt before parsing.
+
+ACCOUNT_FEE_MODE=diagnostic is the only allowed value. Existing FEES remains authoritative and unchanged. An immutable ObservedFeeConfig is an observation candidate only, never injected into scanner/paper/replay. Fee delta = observed normalized taker cost - configured taker rate. Absolute delta >0.0002 (2 bps) emits FEE_MODEL_MISMATCH; exact-boundary floating-point noise is tolerated. It does not change trade gating. Periodic logs may show fee-model numbers, never real balance amounts.
+
+## Balance and funding reconciliation
+
+PrivateAccountSnapshot retains the Phase 5.0 model: exchange, receivedAt, nullable sourceUpdatedAt, BTC/USDT total and nullable available. Bybit total is walletBalance, not net equity/liabilities; availability is null because the deprecated UNIFIED availability field is not reliable. Its envelope time is not an account update timestamp. OKX uses cashBal, availBal, and account uTime. Missing coins are not assumed zero; unsupported/negative/invalid amounts fail closed. Number is approximate binary floating point, suitable only for diagnostics, not real accounting.
+
+AccountReconciliation compares real total with paper available + reserved and exposes differences, funding booleans and fixed reasons. For TARGET_BTC_SIZE it checks buy USDT and sell BTC per venue. Buy cost uses the existing depth simulation on a valid book no older than 1000 ms, including positive observed taker cost when fresh/healthy; otherwise explicitly marks SIMULATED_FEE_ASSUMED and uses configured fees. Rebates cannot finance upfront purchases. Incomplete depth, missing/stale data, unknown available balance or insufficient availability prevents the corresponding funding boolean. The combined boolean requires both sides funded; it is not permission to trade.
+
+Balance total is never substituted for spendable availability. In particular, Bybit availability null means funding cannot be confirmed even with a large total. This does not claim the account is unfunded. Target means nominal gross BTC; actual fee currency, borrowed assets, liabilities, fee deductions from received BTC, reservations elsewhere and real settlement require a later model.
+
+PrivateAccountSafetySummary combines credential safety, account compatibility, last normalized fee snapshots and reconciliation. Overall is SAFE_FOR_READ_ONLY_OBSERVATION / REVIEW_REQUIRED / UNKNOWN. `readOnlyObservationSafe` is never a live approval. Critical unknown, stale or failed diagnostic reads cannot yield SAFE. Fee mismatch/known unsafe/incompatible data produces review. Funding remains a separate observation and never mutates paper balances or risk state.
+
+## Scheduler, cache and freshness
+
+One serial queue per exchange, at most one in-flight request, at most one pending request per kind. Balance outranks queued diagnostics; diagnostics are FIFO. Start-to-start minimum cadence: balance 10 seconds, config/permissions 5 minutes, fee 5 minutes. OKX config supplies permission and config together without duplicate requests. A 1-second dispatcher enqueues only due work; 500 ms minimum gap between request jobs prevents a burst. A queued balance waits at most the current bounded request/retry plus the gap, not the entire diagnostic queue.
+
+At most one retry after 500 ms for network/timeout, HTTP 5xx/429, Bybit 10006 or OKX 50011. Other schema/auth failures do not retry. Failures still respect each kind's cadence. Stop rejects queued reads and waits for the bounded in-flight read. Per-kind attempt counters and monotonic round-trip durations are not exchange execution latency.
+
+Each cache retains last successful normalized snapshot, last success, category-only error and consecutive failures. Permission/config/fee failures immediately mark that category degraded; five balance failures retain the existing balance-degraded flag. Error warnings occur on first/fifth failure in a streak. No snapshot is erased on a failed refresh.
+
+Independent lastBalanceSuccessAt/lastConfigSuccessAt/lastFeeSuccessAt/lastPermissionSuccessAt are exposed. Balance freshness <=30 seconds; fee/config/permissions <=15 minutes, with nonnegative age required. A retained snapshot may still be age-fresh but degraded after a failed refresh; healthy requires fresh **and** no failed latest attempt. Raw last snapshots remain inspectable in memory, but stale/degraded fees are excluded from current fee diagnostics/funding.
+
+## Operations and privacy
+
+/health exposes only derived safety/compatibility, freshness booleans/ages, category failures and counters/timestamps; no UID, key ID, API key, IP list, KYC region, note, label or financial balance amounts. /metrics includes request stats by kind, fee/inventory deltas and normalized account reconciliation. It is financially sensitive: keep the default loopback bind and restrict access. Normal periodic/final logs exclude balance reconciliation; only safety/freshness and permitted fee diagnostics are logged.
+
+API-key/config metadata is discarded inside pure parsers. Normalized balance/fee/config/permission snapshots live only in the collector, are not attached to the paper engine DTO, and are re-fetched after restart. Checkpoint, journal, event and backup contain no private account snapshots. Headers use private non-enumerable storage; configured secrets are redacted. Error paths never include raw response/cause/header excerpts. Static/runtime tests enforce exactly seven GET paths and reject write references.
+
+Private-read failures, unsafe keys and fee mismatches never block public collection or paper readiness. PRIVATE_READ_ENABLED=false sends no authenticated requests; paper economic behavior and replay determinism remain unchanged. state:check, backup:state, replay, soak and secret:scan do not load credentials or contact private endpoints, including with unusable _FILE paths or PRIVATE_READ_ENABLED=true. Backup copies only app-generated paper recovery files; it cannot detect arbitrary unloaded secrets manually injected into trusted state by an operator.
+
+## Configuration and CLI
+
+Set PRIVATE_READ_ENABLED=true only deliberately with complete credential sets for both exchanges. ACCOUNT_FEE_MODE defaults to diagnostic. No .env auto-loading. _FILE values require regular non-symlink files, 0400/0600 on Unix, outside checkout, DATA_DIR and backup roots.
 
 ```sh
 export PRIVATE_READ_ENABLED=true
+export ACCOUNT_FEE_MODE=diagnostic
 export BYBIT_API_KEY_FILE=/secure/bybit-key
 export BYBIT_API_SECRET_FILE=/secure/bybit-secret
 export OKX_API_KEY_FILE=/secure/okx-key
@@ -34,41 +98,23 @@ npm run build
 npm run account:check
 ```
 
-Files must be regular, not symlinks, with 0400/0600 permissions on Unix. Keep files outside checkout, DATA_DIR and backup directories. Direct variables with the corresponding base names are supported but inherited by child processes. Prefer `_FILE`/systemd credentials. See [deployment](VPS_DEPLOYMENT.md).
+Corresponding direct environment names are supported but not alongside _FILE; prefer protected mounted/systemd credentials. Never paste secrets into chat or command arguments. See [deployment](VPS_DEPLOYMENT.md) and [security boundary](SECURITY_BOUNDARY.md).
 
-Create minimum-permission **read/account-access-only** keys; do not grant trade or withdraw. Use exchange IP restrictions when available. Bybit keys must use the read-only setting; OKX requires Read permission. A successful balance response **does not prove** the key lacks trading/withdrawal permission. Operator configuration is still required. Never paste keys into chat, shell arguments, screenshots, source or logs. `account:check` shows currency read status and snapshot age, not amounts, headers or raw account JSON; failures exit nonzero with sanitized categories.
+account:check runs all required reads through the same scheduler and prints only balance OK/FAIL, permission/config status/reasons, fee observed/unavailable, derived IP restriction and request counts. No balances, raw fees, identifiers or addresses. Exit is nonzero for unsafe/unknown permissions, failed reads, incompatible/unknown config, or unavailable/stale fees. Bybit's unresolved cash-only semantics currently causes nonzero even with valid credentials. This operator diagnostic does not stop the paper runtime.
 
-## Normalized memory-only data
+Authenticated smoke is optional and requires explicit local opt-in and credentials; no credentials are needed to build, test or replay. If permission is unsafe, report it and do not treat the result as approval to proceed beyond observation.
 
-`PrivateAccountSnapshot` contains exchange, local `receivedAt`, `sourceUpdatedAt: number|null`, BTC and USDT `{total, available:number|null}`, optional `rawAccountType`. `RealInventorySnapshot` maps these by exchange. No entire raw response enters a business object.
+## Official references audited 2026-09-30
 
-Bybit total is per-coin `walletBalance`, **not net equity after liabilities**; updated UTA borrow semantics apply. Availability is null because UNIFIED `availableToWithdraw` is deprecated and a dependable per-coin spendable value is not provided by this endpoint. Source update time is null: envelope `time` is server response time, not balance update time. OKX total is `cashBal`, availability is `availBal` (null if unavailable/empty), and source update is account `uTime` when present. These are account-scope observations, not funding-wallet inventory, order buying power, or an accounting equivalence across margin modes.
+- [Bybit authentication](https://bybit-exchange.github.io/docs/v5/guide#authentication), [balance](https://bybit-exchange.github.io/docs/v5/account/wallet-balance), [API-key information](https://bybit-exchange.github.io/docs/v5/user/apikey-info), [account info](https://bybit-exchange.github.io/docs/v5/account/account-info), [spot fee rate](https://bybit-exchange.github.io/docs/v5/account/fee-rate).
+- [OKX account config](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-account-configuration), [fee rates and sign semantics](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-fee-rates), [authentication](https://www.okx.com/docs-v5/en/#overview-rest-authentication), [regional documentation](https://app.okx.com/docs-v5/en), [REST domain change](https://www.okx.com/docs-v5/log_en/#2026-05-20).
 
-Both requested coins must be explicitly returned. Missing requested coins fail SCHEMA; **absence is not silently zero**, including when the exchange omits empty accounts. Explicit zero is valid. Unrelated coins are ignored; duplicates, wrong success codes, malformed schema, non-string amounts, negative amounts and non-finite values are rejected. Accounts with negative cash balances require a future liability-aware model rather than coercion. Decimal strings have at most 64 characters, no exponent syntax; BTC <=21 million, USDT <=1 trillion. These conservative engineering bounds reject unsupported values. JavaScript Number is approximate binary floating point: this is a diagnostic model, not settlement/real-order accounting. `receivedAt` is captured after body receipt, before JSON parsing, never copied from source time.
+Phase 5.1 stops at diagnostic reconciliation. Possible Phase 5.2 fee calibration/shadow mode is not implemented; real orders remain out of scope.
 
-## Polling, faults and readiness
+## Release validation
 
-One poll per client no more frequently than 10,000 ms, guarded by monotonic time and an in-flight lock. Periodic polls wait 10,000 ms **after** the prior cycle completes. Timeout is 3,000 ms per attempt including body receipt; response body limit is 1 MiB even without Content-Length. Content-Type must be application/json; malformed JSON is rejected without payload excerpts. At most one retry with deterministic 500 ms delay for network/timeout, HTTP 5xx/429 or recognized exchange rate-limit codes (Bybit 10006 / OKX 50011). Other exchange/auth/schema failures do not retry. Each retry gets a fresh signature. Stop prevents new reads/retries and waits for the bounded in-flight request.
-
-Clients are independent. Collector retains last snapshot, last success, categorized last error and consecutive failures in memory. Five consecutive failed poll cycles marks DEGRADED; polling continues, success clears the count. Warn only on first/fifth failure of a streak. Healthy requires the latest poll to succeed and success age <=20 seconds. Separate `privateRead.diagnosticReady` requires both healthy; this is **not** permission to execute. Private failures never gate paper readiness, balances or decisions. Default-disabled paper behavior is unchanged.
-
-`/health` adds privateRead enabled/configured/healthy/last-success/degraded flags without amounts. `/metrics` adds per-exchange request/success/failure/timeout/rate-limit counts and `lastPrivateReadLatencyMs` (monotonic request round-trip, including local parsing; **not one-way exchange latency**). Counts are per attempt; collector failure streaks are per poll. The poll guard is local and does not count as exchange rate limiting.
-
-`/metrics` also exposes **diagnostic only** real-minus-paper inventory differences for each exchange's BTC/USDT, comparing real total against paper available + reserved. Missing snapshots yield null; observed timestamps and health disclose freshness. These differences can reveal financial information: protect the default loopback metrics endpoint and do not publicly expose it. They are excluded from periodic/final log summaries, checkpoint, journal, paper events and backups. Last observed differences can remain visible during failures; consult health/freshness before interpretation. No real value ever overwrites paper inventory.
-
-## Secret and offline boundaries
-
-Secret wrappers redact JSON/inspect; signer access is explicit through a callback. Signed headers have private non-enumerable storage and short lifetimes (no unbounded signature registry). Native transport errors, response bodies and headers never propagate to logs. Failure logs include only exchange, category and HTTP status. No request-id collection or raw response logging.
-
-`state:check`, `backup:state`, replay, soak and secret:scan **never load private credentials or contact authenticated services**, even with unusable `_FILE` paths or PRIVATE_READ_ENABLED=true. Backup copies only paper recovery files, not private account files, arbitrary DATA_DIR files, environment or credentials. Secrets/real balances never enter the engine DTO. Offline backup cannot discover arbitrary secrets manually injected into trusted state files without loading credentials; keep recovery files operator-protected and use only app-generated state.
-
-Tests use fake fixtures/mock transport, fixed fake HMAC vectors, timeout/size/content-type/redirect/URL guards, retry/rate guards, collector degradation/recovery, and inspection of logs/health/metrics/checkpoint/journal/extracted backup. No network is needed. Real authenticated smoke is optional and must be skipped when not explicitly enabled with local credentials; no credentials are required to build, test or replay.
-
-## Validation for this release
-
-- 276 offline tests pass (39 new private-read tests); typecheck and build pass. No dependencies added.
-- Secret scan: 144 project text files, zero heuristic findings.
-- Public smoke: `npm run paper` and built runtime both reached SYNC_HEALTHY and ready, with clean SIGTERM shutdown/recovery. Tested absent and dummy credentials with PRIVATE_READ_ENABLED=false; authenticated request counts stayed zero.
-- State check and backup passed on temporary smoke state while private read was enabled in the environment and a credential file path was deliberately unusable; neither tool loaded it.
-- Paper fixture replay processed five records. Three soak iterations each processed 13,776 records with identical digest; default thresholds generated zero trades in these datasets. Fill/partial/unwind scenarios are covered separately by existing unit tests. This short soak is not a long-run guarantee.
-- Authenticated live account check skipped: local opt-in was false and complete credential inputs were absent. Disabled CLI correctly refused with exit code 1; no real balance/permission verification is claimed.
+- 319 offline tests pass, including 82 private-read tests (43 added in Phase 5.1). Typecheck/build pass; no dependencies added.
+- Secret scan: 150 project files, zero heuristic findings. Fake API-key/UID/IP/KYC/note/label metadata is checked against logs, health, metrics, CLI projection, normalized summaries and extracted paper backup.
+- Public-only smoke tested absent and dummy credentials with PRIVATE_READ_ENABLED=false: both feeds reached SYNC_HEALTHY/readiness, authenticated counters stayed zero, shutdown and restart recovery were clean.
+- State check and backup succeeded on the temporary smoke state with an unusable credential-file path in the environment. Paper fixture replay processed five records; three soak iterations each processed 13,776 records with the same digest as Phase 5.0. These CLI datasets generated no trades at default thresholds; existing fill/partial/unwind tests cover those paths. This is not a long-run soak guarantee.
+- Authenticated live smoke skipped: local opt-in was false and complete credential inputs were absent. Actual account permissions, balances and fees were not verified against a live private endpoint.

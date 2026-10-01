@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { loadExecutionBoundary } from './execution/startup.js';
 import { createPrivateReadClients } from './private-read/startup.js';
 import { PrivateAccountCollector } from './private-read/collector.js';
-import { compareInventory } from './private-read/inventory.js';
+import { compareInventory, reconcileAccount } from './private-read/inventory.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { DATA_DIR, HEALTH_HOST, HEALTH_PORT, LOG_FORMAT, operationalConfigSnapshot } from './config/runtime.js';
@@ -53,8 +53,9 @@ async function main(): Promise<void> {
   const safety = await loadExecutionBoundary();
   const privateSetup = await createPrivateReadClients();
   const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
-    (exchange, error) => logger.warn('private_read_failed', 'Private balance polling failed; paper remains independent.',
-      { exchange, status: error.status, category: error.category }));
+    (exchange, error, kind) => logger.warn('private_read_failed', 'Private account polling failed; paper remains independent.',
+      { exchange, kind, status: error.status, category: error.category }), Date.now,
+    (exchange, category) => logger.warn('private_account_review', 'Read-only diagnostic requires review; paper remains independent.', { exchange, category }));
   logger.info('execution_safety', `Execution mode: PAPER; Real execution: DISABLED; Kill switch: ${safety.executionKillSwitch ? 'ENABLED' : 'DISABLED'}; Private Bybit credentials configured: ${safety.bybitPrivateCredentialsConfigured ? 'yes' : 'no'}; Private OKX credentials configured: ${safety.okxPrivateCredentialsConfigured ? 'yes' : 'no'}.`, safety);
   logger.info('effective_config', 'Effective operational config (allowlisted).', { ...operationalConfigSnapshot(), ...safety, privateReadEnabled: privateSetup.enabled });
   runtimeLock = await acquireRuntimeLock(DATA_DIR);
@@ -170,8 +171,18 @@ async function main(): Promise<void> {
     const health = getHealth();
     const persistence = durableStore?.getHealth();
     const now = Date.now();
+    const privateInventory = privateCollector.getInventory();
+    const safetySummary = privateCollector.getSafetySummary();
+    const books = pipeline.getLatestDepthSnapshot();
+    const reconciliation = includeInventory && privateSetup.enabled ? (['bybit', 'okx'] as const).map(exchange =>
+      reconcileAccount(exchange, privateInventory[exchange] ?? null, paperEngine.getBalances(),
+        privateCollector.getDiagnosticHealth(exchange).fee.healthy ? (exchange === 'bybit' ? safetySummary.bybitFeeSnapshot : safetySummary.okxFeeSnapshot) : null,
+        (exchange === 'bybit' ? books?.bybitBook : books?.okxBook) ?? null, now,
+        privateCollector.getDiagnosticHealth(exchange).balance.healthy)) : [];
     return { ...health, process: resources?.snapshot(),
       privateReadMetrics: privateCollector.getMetrics(),
+      ...(privateSetup.enabled ? { feeModel: privateCollector.getFeeDiagnostic() } : {}),
+      ...(includeInventory && privateSetup.enabled ? { accountSafety: privateCollector.getSafetySummary(reconciliation) } : {}),
       ...(includeInventory ? { inventoryObservation: compareInventory(privateCollector.getInventory(), paperEngine.getBalances()) } : {}),
       market: { ...health.market, ...operational.heartbeat,
         bybitBookAgeMs: operational.heartbeat.lastBybitBookAt === null ? null : now - operational.heartbeat.lastBybitBookAt,

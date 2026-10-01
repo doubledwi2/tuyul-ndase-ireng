@@ -27,8 +27,9 @@ import { ClockHealthMonitor } from './timing/clock-health.js';
 const safety = await loadExecutionBoundary();
 const privateSetup = await createPrivateReadClients();
 const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
-  (exchange, error) => new Logger('private-read').warn('private_read_failed', 'Private balance polling failed.',
-    { exchange, status: error.status, category: error.category }));
+  (exchange, error, kind) => new Logger('private-read').warn('private_read_failed', 'Private account polling failed.',
+    { exchange, kind, status: error.status, category: error.category }), Date.now,
+  (exchange, category) => new Logger('private-read').warn('private_account_review', 'Read-only account diagnostic requires review.', { exchange, category }));
 new Logger('market-runtime').info('execution_safety', 'Public market data; real execution DISABLED.', { ...safety, privateReadEnabled: privateSetup.enabled });
 
 const OUTPUT_INTERVAL_MS = 500;
@@ -84,7 +85,8 @@ const outputTimer = setInterval(() => {
 const metricsTimer = setInterval(() => {
   printMetricsSummary(pipeline.getMetricsSummary());
   new Logger('private-read').info('private_read_summary', 'Private read diagnostics (no balances).',
-    { health: privateCollector.getHealth(), metrics: privateCollector.getMetrics() });
+    { health: privateCollector.getHealth(), metrics: privateCollector.getMetrics(),
+      ...(privateSetup.enabled ? { feeModel: privateCollector.getFeeDiagnostic() } : {}) });
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
