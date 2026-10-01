@@ -7,6 +7,30 @@ import { OpportunityTracker } from './opportunity.js';
 
 const START = 1_700_000_000_000;
 
+test('fresh-pair baselines are copied and independent per direction', () => {
+  const tracker = new OpportunityTracker();
+  const pair = { bybit: 1, okx: 1 };
+  const forward = comparison();
+  const reverse = comparison({ buyExchange: 'okx', sellExchange: 'bybit' });
+  assert.equal(tracker.process(forward, START, undefined, undefined, pair)?.state, 'DETECTED');
+  assert.equal(tracker.process(reverse, START, undefined, undefined, pair)?.state, 'DETECTED');
+  pair.bybit = 2;
+  assert.equal(tracker.process(forward, START + 200, undefined, undefined, pair), null);
+  assert.equal(tracker.process(reverse, START + 200, undefined, undefined, pair), null);
+  pair.okx = 2;
+  assert.equal(tracker.process(forward, START + 200, undefined, undefined, pair)?.state, 'QUALIFIED');
+  assert.equal(tracker.process(reverse, START + 200, undefined, undefined, pair)?.state, 'QUALIFIED');
+});
+
+test('fresh-pair tracked depth event cannot progress from missing or reused metadata', () => {
+  const tracker = new OpportunityTracker();
+  tracker.process(comparison(), START, undefined, undefined, { bybit: 10, okx: 20 });
+  assert.equal(tracker.process(comparison(), START + 200), null);
+  assert.equal(tracker.process(comparison(), START + 200, undefined, undefined, { bybit: 10, okx: 20 }), null);
+  assert.equal(tracker.process(comparison(), START + 200, undefined, undefined, { bybit: 9, okx: 21 }), null);
+  assert.equal(tracker.process(comparison(), START + 200, undefined, undefined, { bybit: 11, okx: 21 })?.state, 'QUALIFIED');
+});
+
 function execution(side: 'BUY' | 'SELL'): ExecutionSimulation {
   return {
     side,

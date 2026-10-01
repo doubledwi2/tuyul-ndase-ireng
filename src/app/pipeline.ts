@@ -27,6 +27,7 @@ import {
 import {
   OpportunityTracker,
   type OpportunityEvent,
+  type BookGenerationPair,
 } from '../scanner/opportunity.js';
 import {
   qualifyOpportunity,
@@ -82,6 +83,7 @@ export interface MarketPipelineOptions {
 }
 
 export class MarketPipeline {
+  private readonly bookGenerations = { bybit: 0, okx: 0 };
   private readonly latestQuotes = new Map<BestQuote['exchange'], BestQuote>();
   private readonly latestBooks = new Map<
     NormalizedOrderBook['exchange'],
@@ -177,6 +179,7 @@ export class MarketPipeline {
     if (!isValidNormalizedOrderBook(orderBook)) {
       return null;
     }
+    this.bookGenerations[orderBook.exchange] += 1;
     const sourceClockDiagnostic = this.sourceClockOffsetEstimators[
       orderBook.exchange
     ].observe(orderBook.exchangeTimestamp, orderBook.receivedTimestamp);
@@ -253,6 +256,7 @@ export class MarketPipeline {
       processingTimestamp,
       true,
       syncAssessment,
+      { ...this.bookGenerations },
     );
     return snapshot;
   }
@@ -263,6 +267,7 @@ export class MarketPipeline {
     processingTimestamp: number,
     recordComparisonMetrics: boolean,
     syncAssessment: SyncAssessment | undefined,
+    generations?: BookGenerationPair,
   ): void {
     for (const [index, comparison] of comparisons.entries()) {
       const qualification = qualifications[index];
@@ -277,6 +282,7 @@ export class MarketPipeline {
         processingTimestamp,
         qualification,
         syncAssessment,
+        generations,
       );
       if (event === null) {
         continue;

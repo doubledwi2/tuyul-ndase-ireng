@@ -225,7 +225,7 @@ test('direct and replayed order books produce deterministic fills and lifecycle'
 
   assert.deepEqual(
     directEvents.map((event) => event.state),
-    ['DETECTED', 'VALIDATING', 'QUALIFIED', 'DISAPPEARED'],
+    ['DETECTED', 'QUALIFIED', 'DISAPPEARED'],
   );
   assert.deepEqual(
     replayEvents.map(comparableEvent),
@@ -349,6 +349,7 @@ test('replay quality config override can change qualification result', async (co
     { recordedAt: 4_000, orderBook: orderBook('bybit', 99, 100, 4_000) },
     { recordedAt: 4_010, orderBook: orderBook('okx', 102, 103, 4_010) },
     { recordedAt: 4_120, orderBook: orderBook('bybit', 99, 100, 4_120) },
+    { recordedAt: 4_120, orderBook: orderBook('okx', 102, 103, 4_120) },
   ];
   const root = await mkdtemp(join(tmpdir(), 'pipeline-quality-config-'));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -458,17 +459,15 @@ test('sync health invalidates and recovery restarts qualification duration', () 
     events.map((event) => event.state),
     [
       'DETECTED',
-      'VALIDATING',
       'QUALIFIED',
       'INVALID_SYNC',
       'DETECTED',
-      'VALIDATING',
-      'QUALIFIED',
       'DISAPPEARED',
     ],
   );
-  assert.equal(events[3]?.currentSyncStatus, 'CLOCK_UNHEALTHY');
-  assert.deepEqual(events[3]?.currentSyncReasons, ['CLOCK_UNHEALTHY']);
+  assert.equal(events[2]?.currentSyncStatus, 'CLOCK_UNHEALTHY');
+  assert.deepEqual(events[2]?.currentSyncReasons, ['CLOCK_UNHEALTHY']);
+  assert.equal(events[3]?.updatedAt, 5_180);
   assert.deepEqual(events.at(-1)?.currentQualificationReasons, [
     'NOT_NET_POSITIVE',
     'STALE',

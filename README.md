@@ -1,8 +1,16 @@
 # tuyul-ndase-ireng
 
-Real-Account Shadow Mode v0.5.2 adalah Phase 5.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Real-Account Shadow Mode v0.5.2 dengan correctness patch Phase 5.2.1 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
 Aplikasi mendukung authenticated private **READ ONLY**, opt-in: balance BTC/USDT, permission inspection, account config, dan observed spot fee. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance/config/fee tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
+
+### Phase 5.2.1 fresh-pair qualification
+
+Depth lifecycle hanya menerima observation positif baru jika **kedua local book generations maju** sejak accepted observation terakhir untuk direction/event tersebut. Counter integer bertambah pada setiap normalized book valid, bukan dari timestamp; timestamp yang sama tetap bisa mewakili update baru. First detection menyimpan baseline dengan satu observation. Update satu sisi tetap menghasilkan comparison/timing metrics, tetapi tidak menaikkan validObservations, tidak memajukan VALIDATING/QUALIFIED, dan tidak mengevaluasi timer qualification.
+
+Safety failure tetap immediate: economic/depth/quality failure menghasilkan DISAPPEARED, sync failure menghasilkan INVALID_SYNC sesuai semantics existing, tanpa menunggu fresh pair. Setiap observation unhealthy mereset recovery baseline. Recovery menunggu kedua venue maju setelah baseline itu, kembali DETECTED, dan memulai full validation duration baru. Generation freshness tidak membuktikan sinkronisasi clock exchange atau network; source-clock/timing guard tetap berlaku.
+
+Paper entry otomatis mewarisi guard lewat event QUALIFIED, tanpa guard duplikat dalam engine. Shadow current-book observation tetap setiap depth snapshot. Legacy processQuote tetap compatibility path; schema OpportunityEvent/persistence tidak berubah. Detail: [FRESH_PAIR_QUALIFICATION.md](docs/FRESH_PAIR_QUALIFICATION.md).
 
 ### Phase 5.2 shadow observation
 
@@ -177,13 +185,13 @@ Lifecycle memakai timestamp yang diinjeksi dan tidak memakai sleep/timer di busi
 
 ```text
 observasi quality-valid pertama                DETECTED
-observasi berikut sebelum minimum duration     VALIDATING
-quality-valid selama minimal 100 ms            QUALIFIED
+fresh pair berikut sebelum minimum duration    VALIDATING
+fresh pair quality-valid, elapsed >= 100 ms     QUALIFIED
 quality failure biasa                          DISAPPEARED
 SyncAssessment tidak healthy                   INVALID_SYNC
 ```
 
-Data stale tidak membuat event baru. Jika event hidup menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data pulih dan seluruh rule kembali lolos, validation window dimulai ulang dari `DETECTED` dengan event ID yang sama agar interval stale tidak dihitung sebagai active duration. Jika event belum pernah qualified, `detectedAt` juga di-reset; history qualification pertama pada event yang sudah pernah qualified tetap dipertahankan.
+Data stale tidak membuat event baru. Jika event hidup menjadi stale, state berubah menjadi `INVALID_SYNC`. Saat data pulih, seluruh rule kembali lolos, dan kedua generation maju setelah baseline invalidasi terakhir, validation window dimulai ulang dari `DETECTED` dengan event ID yang sama agar interval stale tidak dihitung sebagai active duration. Jika event belum pernah qualified, `detectedAt` juga di-reset; history qualification pertama pada event yang sudah pernah qualified tetap dipertahankan.
 
 Event menyimpan `qualifiedAt`, `timeToQualifiedMs`, `everQualified`, `currentQualificationReasons`, current receive/source skew, max book age, sync status/reasons, dan peak receive skew. Sync unhealthy bersifat `INVALID_SYNC`, bukan economic disappearance. Recovery me-reset validation duration window.
 
@@ -586,7 +594,8 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 4.2 execution safety, secret boundary, dan adapter abstraction: complete.
 - Phase 5.0 authenticated private read-only account integration: complete.
 - Phase 5.1 read-only account reconciliation and fee diagnostics: complete.
-- Phase 5.2 real-account shadow observation: current. Bukan real orders.
+- Phase 5.2 real-account shadow observation: complete. Bukan real orders.
+- Phase 5.2.1 fresh-pair qualification integrity: current. Phase 5.3 belum diimplementasikan.
 
 ## Scope Phase 5.2
 

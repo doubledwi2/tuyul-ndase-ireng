@@ -65,10 +65,16 @@ export interface OpportunityEvent {
   everInvalidSync: boolean;
 }
 
+export interface BookGenerationPair {
+  readonly bybit: number;
+  readonly okx: number;
+}
+
 interface TrackedOpportunity {
   event: OpportunityEvent;
   validObservations: number;
   validationStartedAt: number | null;
+  lastAcceptedGenerations: BookGenerationPair | null;
 }
 
 function eventKey(comparison: DepthComparison): string {
@@ -151,6 +157,7 @@ function createTrackedOpportunity(
   qualification: OpportunityQualification,
   timestamp: number,
   syncAssessment?: SyncAssessment,
+  generations?: BookGenerationPair,
 ): TrackedOpportunity {
   if (
     !qualification.qualified ||
@@ -221,6 +228,7 @@ function createTrackedOpportunity(
     },
     validObservations: 1,
     validationStartedAt: timestamp,
+    lastAcceptedGenerations: generations === undefined ? null : { ...generations },
   };
 }
 
@@ -259,6 +267,7 @@ export class OpportunityTracker {
     timestamp: number,
     qualification = qualifyOpportunity(comparison, this.qualityConfig),
     syncAssessment?: SyncAssessment,
+    generations?: BookGenerationPair,
   ): OpportunityEvent | null {
     const key = eventKey(comparison);
     const tracked = this.activeEvents.get(key);
@@ -287,6 +296,9 @@ export class OpportunityTracker {
       if ((syncAssessment === undefined || economicQualityOk) && syncUnhealthy) {
         tracked.validObservations = 0;
         tracked.validationStartedAt = null;
+        // Every unhealthy observation resets the recovery baseline, even if
+        // INVALID_SYNC was already emitted. Safety never waits for a fresh pair.
+        if (generations !== undefined) tracked.lastAcceptedGenerations = { ...generations };
         if (tracked.event.state === 'INVALID_SYNC') {
           return null;
         }
@@ -308,6 +320,7 @@ export class OpportunityTracker {
         qualification,
         timestamp,
         syncAssessment,
+        generations,
       );
       this.activeEvents.set(key, created);
       return snapshot(created.event);
@@ -320,6 +333,12 @@ export class OpportunityTracker {
       timestamp,
       syncAssessment,
     );
+    const previous = tracked.lastAcceptedGenerations;
+    if (previous !== null && (generations === undefined ||
+      generations.bybit <= previous.bybit || generations.okx <= previous.okx)) {
+      return null;
+    }
+    if (generations !== undefined) tracked.lastAcceptedGenerations = { ...generations };
     if (tracked.validationStartedAt === null) {
       resetValidationWindow(tracked, comparison, timestamp);
       tracked.event.state = 'DETECTED';
