@@ -127,7 +127,7 @@ export class OperationalStateManager {
   getHealth(risk: PaperRiskSummary): ServiceHealth {
     this.refreshState();
     return {
-      version: '0.5.1', uptimeSec: process.uptime(), readinessReasons: this.reasons(),
+      version: '0.5.2', uptimeSec: process.uptime(), readinessReasons: this.reasons(),
       market: {
         bybitConnected: this.bybitConnected,
         okxConnected: this.okxConnected,

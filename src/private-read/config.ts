@@ -55,6 +55,8 @@ export function validateBalanceUrl(exchange: Exchange, url: string): void {
   if (!HOSTS[exchange].some(host => url === `https://${host}${BALANCE_PATHS[exchange]}`)) throw new PrivateReadError('CONFIG');
 }
 export function privateReadConfig(env: NodeJS.ProcessEnv = process.env) {
+  if (env.SHADOW_MODE_ENABLED !== undefined && !['true', 'false'].includes(env.SHADOW_MODE_ENABLED)) throw new PrivateReadError('CONFIG');
+  if (env.SHADOW_MODE_ENABLED === 'true' && env.PRIVATE_READ_ENABLED !== 'true') throw new PrivateReadError('CONFIG');
   if (env.ACCOUNT_FEE_MODE !== undefined && env.ACCOUNT_FEE_MODE !== 'diagnostic') throw new PrivateReadError('CONFIG');
   if (env.PRIVATE_READ_ENABLED !== undefined && !['true', 'false'].includes(env.PRIVATE_READ_ENABLED)) throw new PrivateReadError('CONFIG');
   return Object.freeze({

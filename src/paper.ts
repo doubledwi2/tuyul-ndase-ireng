@@ -3,6 +3,8 @@ import { loadExecutionBoundary } from './execution/startup.js';
 import { createPrivateReadClients } from './private-read/startup.js';
 import { PrivateAccountCollector } from './private-read/collector.js';
 import { compareInventory, reconcileAccount } from './private-read/inventory.js';
+import { ShadowRuntime } from './shadow/shadow-runtime.js';
+import { shadowInput } from './app/shadow-input.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { DATA_DIR, HEALTH_HOST, HEALTH_PORT, LOG_FORMAT, operationalConfigSnapshot } from './config/runtime.js';
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
   const logger = new Logger('paper-runtime');
   const safety = await loadExecutionBoundary();
   const privateSetup = await createPrivateReadClients();
+  const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
   const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
     (exchange, error, kind) => logger.warn('private_read_failed', 'Private account polling failed; paper remains independent.',
       { exchange, kind, status: error.status, category: error.category }), Date.now,
@@ -165,7 +168,7 @@ async function main(): Promise<void> {
 
   const getHealth = () => {
     if (durableStore !== null) updatePersistenceHealth(durableStore.getHealth());
-    return { ...operational.getHealth(paperEngine.getRiskSummary()), privateRead: privateCollector.getHealth() };
+    return { ...operational.getHealth(paperEngine.getRiskSummary()), privateRead: privateCollector.getHealth(), shadow: shadow.getHealth(Date.now()) };
   };
   const getMetrics = (includeInventory = false): Record<string, unknown> => {
     const health = getHealth();
@@ -181,6 +184,7 @@ async function main(): Promise<void> {
         privateCollector.getDiagnosticHealth(exchange).balance.healthy)) : [];
     return { ...health, process: resources?.snapshot(),
       privateReadMetrics: privateCollector.getMetrics(),
+      ...(shadow.enabled ? { shadowMetrics: shadow.getMetrics() } : {}),
       ...(privateSetup.enabled ? { feeModel: privateCollector.getFeeDiagnostic() } : {}),
       ...(includeInventory && privateSetup.enabled ? { accountSafety: privateCollector.getSafetySummary(reconciliation) } : {}),
       ...(includeInventory ? { inventoryObservation: compareInventory(privateCollector.getInventory(), paperEngine.getBalances()) } : {}),
@@ -233,6 +237,10 @@ async function main(): Promise<void> {
       );
     }
     paperCoordinator.processOrderBook(orderBook, timestamp);
+    if (shadow.enabled && snapshot !== null) {
+      try { shadow.evaluate(shadowInput(snapshot, privateCollector, timestamp)); }
+      catch { logger.warn('shadow_evaluation_failed', 'Shadow diagnostic unavailable; paper remains independent.'); }
+    }
   }
 
   const connections: ExchangeConnection[] = [
@@ -259,6 +267,7 @@ async function main(): Promise<void> {
   }, OUTPUT_INTERVAL_MS);
 
   const metricsTimer = setInterval(() => {
+    if (shadow.enabled) logger.info('shadow_summary', '[SHADOW] Hypothetical current-book economics only.', { ...shadow.getHealth(Date.now()), ...shadow.getMetrics() });
     logger.info('operational_summary', 'Periodic operational health.', getMetrics());
     resources?.reset();
     if (durableStore?.getHealth().dirtySince != null && durableStore.getHealth().queueDepth === 0) {

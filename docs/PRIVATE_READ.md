@@ -109,7 +109,7 @@ Authenticated smoke is optional and requires explicit local opt-in and credentia
 - [Bybit authentication](https://bybit-exchange.github.io/docs/v5/guide#authentication), [balance](https://bybit-exchange.github.io/docs/v5/account/wallet-balance), [API-key information](https://bybit-exchange.github.io/docs/v5/user/apikey-info), [account info](https://bybit-exchange.github.io/docs/v5/account/account-info), [spot fee rate](https://bybit-exchange.github.io/docs/v5/account/fee-rate).
 - [OKX account config](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-account-configuration), [fee rates and sign semantics](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-fee-rates), [authentication](https://www.okx.com/docs-v5/en/#overview-rest-authentication), [regional documentation](https://app.okx.com/docs-v5/en), [REST domain change](https://www.okx.com/docs-v5/log_en/#2026-05-20).
 
-Phase 5.1 stops at diagnostic reconciliation. Possible Phase 5.2 fee calibration/shadow mode is not implemented; real orders remain out of scope.
+Phase 5.1 reconciliation is complete. Phase 5.2 adds a separate cache-only shadow observer; see [SHADOW_MODE.md](SHADOW_MODE.md). Paper fees, private polling and real execution restrictions remain unchanged.
 
 ## Release validation
 

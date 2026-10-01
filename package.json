@@ -1,6 +1,6 @@
 {
   "name": "tuyul-ndase-ireng",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "description": "BTC/USDT scanner with durable virtual paper execution",
   "type": "module",
@@ -15,11 +15,12 @@
     "backup:state": "node dist/state-tools.js backup",
     "execution:check": "node dist/execution-check.js",
     "account:check": "node dist/account-check.js",
+    "shadow:check": "node dist/shadow-check.js",
     "secret:scan": "node dist/secret-scan.js",
     "soak": "npm run build && node --expose-gc dist/soak.js",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts src/risk/*.test.ts src/persistence/*.test.ts src/operations/*.test.ts src/paper/*.test.ts src/execution/*.test.ts src/security/*.test.ts src/private-read/*.test.ts",
+    "test": "node --import tsx --test src/exchanges/*.test.ts src/scanner/*.test.ts src/recording/*.test.ts src/metrics/*.test.ts src/replay/*.test.ts src/timing/*.test.ts src/app/*.test.ts src/risk/*.test.ts src/persistence/*.test.ts src/operations/*.test.ts src/paper/*.test.ts src/execution/*.test.ts src/security/*.test.ts src/private-read/*.test.ts src/shadow/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

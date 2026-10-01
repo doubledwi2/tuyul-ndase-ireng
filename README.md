@@ -1,10 +1,18 @@
 # tuyul-ndase-ireng
 
-Read-Only Account Reconciliation v0.5.1 adalah Phase 5.1 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Real-Account Shadow Mode v0.5.2 adalah Phase 5.2 dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
 Aplikasi mendukung authenticated private **READ ONLY**, opt-in: balance BTC/USDT, permission inspection, account config, dan observed spot fee. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance/config/fee tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
 
-### Phase 5.1 private-read dan execution safety
+### Phase 5.2 shadow observation
+
+`SHADOW_MODE_ENABLED=false` default. Jika true, wajib `PRIVATE_READ_ENABLED=true`; kombinasi lain gagal startup. Shadow memakai cache account dan public books pada logical decision time, tanpa REST per candidate dan tanpa future snapshot. Evaluator menghitung dua arah dengan multi-level depth: baseline configured fee versus observed account fee. Fee stale/unavailable menjadi `SIMULATION_FALLBACK` yang explicit degraded, bukan dianggap account-calibrated.
+
+Economics `SHADOW_POSITIVE` terpisah dari funding. Bybit `available=null` tetap unknown; compatibility Bybit `UNKNOWN` tidak dinaikkan. Saldo aktual tidak dimutasi atau dipersist. Tidak ada shadow recorder opsional yang diaktifkan; metrics bounded dan health terpisah dari paper. Terminal summary setiap 60 detik. `npm run shadow:check` menjalankan fixture offline dua kali; `--live` harus eksplisit dan hanya diagnostic GET.
+
+Shadow positive != profitable real trade. Shadow funded != approval to trade. No exchange write capability exists. Current-book shadow bukan prediksi real fill atau simulasi latency order. Detail: [SHADOW_MODE.md](docs/SHADOW_MODE.md).
+
+### Private-read dan execution safety
 
 `src/private-read/` terpisah dari public WebSocket dan execution adapter. Capability immutable: publicMarketData=true, privateRead=true, privateTrade=false, withdrawal=false. `DisabledLiveExecutionAdapter` tetap menolak seluruh submit/cancel/status; approval live selalu false. Tidak ada override capability lewat environment.
 
@@ -577,9 +585,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 4.1 long-run operations, VPS deployment, dan observability: complete.
 - Phase 4.2 execution safety, secret boundary, dan adapter abstraction: complete.
 - Phase 5.0 authenticated private read-only account integration: complete.
-- Phase 5.1 read-only account reconciliation and fee diagnostics: current.
-- Phase 5.2 possible next: paper fee calibration / real-account shadow mode, bukan real orders; belum diimplementasikan.
+- Phase 5.1 read-only account reconciliation and fee diagnostics: complete.
+- Phase 5.2 real-account shadow observation: current. Bukan real orders.
 
-## Scope Phase 5.1
+## Scope Phase 5.2
 
-Scope versi ini menambahkan tujuh typed authenticated GET reads, permission/config safety, observed fee normalization, scheduler/cache per read kind, dan real-vs-paper inventory/funding diagnostics. Tidak ada dynamic fee injection, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan cache-only shadow economics, funding uncertainty, baseline-vs-shadow fee flips, bounded metrics, dan fixture deterministik di atas tujuh typed authenticated GET reads Phase 5.1. Tidak ada observed fee injection ke paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.

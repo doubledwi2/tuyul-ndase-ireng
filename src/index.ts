@@ -3,6 +3,8 @@ import { loadExecutionBoundary } from './execution/startup.js';
 import { Logger } from './operations/logger.js';
 import { createPrivateReadClients } from './private-read/startup.js';
 import { PrivateAccountCollector } from './private-read/collector.js';
+import { ShadowRuntime } from './shadow/shadow-runtime.js';
+import { shadowInput } from './app/shadow-input.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { CLOCK_JUMP_THRESHOLD_MS } from './config/timing.js';
@@ -26,6 +28,7 @@ import { ClockHealthMonitor } from './timing/clock-health.js';
 
 const safety = await loadExecutionBoundary();
 const privateSetup = await createPrivateReadClients();
+const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
 const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
   (exchange, error, kind) => new Logger('private-read').warn('private_read_failed', 'Private account polling failed.',
     { exchange, kind, status: error.status, category: error.category }), Date.now,
@@ -55,7 +58,11 @@ function receiveOrderBook(orderBook: NormalizedOrderBook): void {
     orderBook.receivedTimestamp,
     orderBook.receivedMonotonicMs ?? performance.now(),
   );
-  pipeline.processOrderBook(orderBook, recordedAt, clockHealth);
+  const snapshot = pipeline.processOrderBook(orderBook, recordedAt, clockHealth);
+  if (shadow.enabled && snapshot !== null) {
+    try { shadow.evaluate(shadowInput(snapshot, privateCollector, recordedAt)); }
+    catch { new Logger('shadow').warn('shadow_evaluation_failed', 'Shadow diagnostic unavailable.'); }
+  }
   void orderBookRecorder.record(orderBook, recordedAt);
   const quote = deriveBestQuote(orderBook);
   if (quote !== null) {
@@ -83,6 +90,7 @@ const outputTimer = setInterval(() => {
 }, OUTPUT_INTERVAL_MS);
 
 const metricsTimer = setInterval(() => {
+  if (shadow.enabled) new Logger('shadow').info('shadow_summary', '[SHADOW] Hypothetical current-book economics only.', { ...shadow.getHealth(Date.now()), ...shadow.getMetrics() });
   printMetricsSummary(pipeline.getMetricsSummary());
   new Logger('private-read').info('private_read_summary', 'Private read diagnostics (no balances).',
     { health: privateCollector.getHealth(), metrics: privateCollector.getMetrics(),
