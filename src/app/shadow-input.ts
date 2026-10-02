@@ -2,6 +2,7 @@ import type { DepthPipelineSnapshot } from './pipeline.js';
 import type { PrivateAccountCollector } from '../private-read/collector.js';
 import type { ShadowAccountState, ShadowInput, ShadowVenueInput } from '../shadow/shadow-types.js';
 import type { Exchange } from '../private-read/types.js';
+import type { InstrumentRulesCollector } from '../instrument-rules/collector.js';
 
 function freezeSnapshot<T extends object>(value: T): T {
   for (const child of Object.values(value)) {
@@ -32,6 +33,7 @@ export function shadowAccounts(collector: PrivateAccountCollector): ShadowAccoun
   }
   return Object.freeze({ bybit: venue('bybit'), okx: venue('okx') });
 }
-export function shadowInput(snapshot: DepthPipelineSnapshot, collector: PrivateAccountCollector, evaluatedAt: number): ShadowInput {
-  return { evaluatedAt, books: { bybit: snapshot.bybitBook, okx: snapshot.okxBook }, sync: snapshot.syncAssessment, accounts: shadowAccounts(collector) };
+export function shadowInput(snapshot: DepthPipelineSnapshot, collector: PrivateAccountCollector, evaluatedAt: number, rules?: InstrumentRulesCollector): ShadowInput {
+  return { evaluatedAt, books: { bybit: snapshot.bybitBook, okx: snapshot.okxBook }, sync: snapshot.syncAssessment, accounts: shadowAccounts(collector),
+    ...(rules ? { instrumentRules: rules.getSnapshots() } : {}) };
 }

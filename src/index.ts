@@ -3,6 +3,7 @@ import { loadExecutionBoundary } from './execution/startup.js';
 import { Logger } from './operations/logger.js';
 import { createPrivateReadClients } from './private-read/startup.js';
 import { PrivateAccountCollector } from './private-read/collector.js';
+import { InstrumentRulesCollector } from './instrument-rules/collector.js';
 import { ShadowRuntime } from './shadow/shadow-runtime.js';
 import { shadowInput } from './app/shadow-input.js';
 import { ShadowExecutionRuntime } from './shadow-execution/shadow-execution-runtime.js';
@@ -31,6 +32,7 @@ const safety = await loadExecutionBoundary();
 const privateSetup = await createPrivateReadClients();
 const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
 const shadowExecution = new ShadowExecutionRuntime(process.env.SHADOW_EXECUTION_ENABLED === 'true');
+const instrumentRules = new InstrumentRulesCollector();
 const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
   (exchange, error, kind) => new Logger('private-read').warn('private_read_failed', 'Private account polling failed.',
     { exchange, kind, status: error.status, category: error.category }), Date.now,
@@ -48,7 +50,7 @@ const pipeline = new MarketPipeline({
   onEvent: event => {
     printOpportunityEvent(event);
     const snapshot = pipeline.getLatestDepthSnapshot();
-    if (snapshot) shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt));
+    if (snapshot) shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt, instrumentRules));
   },
   monotonicNow: () => performance.now(),
 });
@@ -67,7 +69,7 @@ function receiveOrderBook(orderBook: NormalizedOrderBook): void {
   );
   const snapshot = pipeline.processOrderBook(orderBook, recordedAt, clockHealth);
   if (shadow.enabled && snapshot !== null) {
-    try { shadow.evaluate(shadowInput(snapshot, privateCollector, recordedAt)); }
+    try { shadow.evaluate(shadowInput(snapshot, privateCollector, recordedAt, instrumentRules)); }
     catch { new Logger('shadow').warn('shadow_evaluation_failed', 'Shadow diagnostic unavailable.'); }
   }
   void orderBookRecorder.record(orderBook, recordedAt);
@@ -82,6 +84,7 @@ const connections: ExchangeConnection[] = [
   connectOkx(receiveOrderBook),
 ];
 privateCollector.start();
+instrumentRules.start();
 
 const outputTimer = setInterval(() => {
   const snapshot = pipeline.getLatestDepthSnapshot();
@@ -97,6 +100,8 @@ const outputTimer = setInterval(() => {
 }, OUTPUT_INTERVAL_MS);
 
 const metricsTimer = setInterval(() => {
+  new Logger('instrument-rules').info('instrument_rules_summary', 'Public instrument metadata only.',
+    { health: instrumentRules.getHealth(), metrics: instrumentRules.getMetrics() });
   if (shadowExecution.enabled) new Logger('shadow-execution').info('shadow_execution_summary', '[SHADOW EXECUTION] Hypothetical modeled fills only.',
     { ...shadowExecution.getHealth(), ...shadowExecution.getMetrics() });
   if (shadow.enabled) new Logger('shadow').info('shadow_summary', '[SHADOW] Hypothetical current-book economics only.', { ...shadow.getHealth(Date.now()), ...shadow.getMetrics() });
@@ -124,6 +129,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     connection.close();
   }
   await privateCollector.stop();
+  await instrumentRules.stop();
 
   printMetricsSummary(pipeline.getMetricsSummary());
 

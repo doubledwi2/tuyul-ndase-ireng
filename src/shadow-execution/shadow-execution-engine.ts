@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RuleCalibrationMetrics } from '../instrument-rules/metrics.js';
 import { FEES } from '../config/fees.js';
 import { MAX_PAPER_TRIGGER_AGE_MS, PAPER_BALANCE_EPSILON as EPS, PAPER_EXECUTION_CONFIG,
   validatePaperExecutionConfig, type PaperExecutionConfig } from '../config/paper.js';
@@ -29,6 +30,7 @@ export class ShadowExecutionEngine {
   private readonly seen = new Set<string>();
   private readonly processedBooks = new WeakSet<NormalizedOrderBook>();
   private readonly metrics = new ShadowExecutionMetrics();
+  private readonly ruleMetrics = new RuleCalibrationMetrics();
   private sequence = 0;
   private lastTime = 0;
   private retiredBefore = -1;
@@ -67,22 +69,31 @@ export class ShadowExecutionEngine {
       this.metrics.duplicateRejected++; return reject('DUPLICATE_OR_RETIRED_OPPORTUNITY');
     }
     if (this.active.size >= this.maxActive) { this.metrics.capacityRejected++; return reject('SHADOW_CAPACITY_LIMIT'); }
-    const assessment = evaluateShadow(input, event.targetBaseSize);
+    const originalAssessment = evaluateShadow(input, event.targetBaseSize);
+    const original = originalAssessment.directions.find(d => d.buyExchange === event.buyExchange)!;
+    const rules = original.ruleAssessment;
+    this.ruleMetrics.record(rules, original.shadowNetPnl, original.ruleCalibratedNetPnl);
+    if (rules.status === 'NOT_EXECUTABLE') return reject('NOT_EXECUTABLE_RULES');
+    const target = rules.status === 'EXECUTABLE' ? rules.commonQuantity! : event.targetBaseSize;
+    const assessment = target === event.targetBaseSize ? originalAssessment : evaluateShadow(input, target);
     const d = assessment.directions.find(d => d.buyExchange === event.buyExchange)!;
     if (d.economicsStatus === 'SHADOW_UNCERTAIN' || d.shadowNetPnl === null) return reject('INVALID_TRIGGER_BOOKS');
-    const buyPrice = simulateExecution(input.books[event.buyExchange], 'BUY', event.targetBaseSize).averageExecutionPrice!;
-    const sellPrice = simulateExecution(input.books[event.sellExchange], 'SELL', event.targetBaseSize).averageExecutionPrice!;
+    const buyPrice = simulateExecution(input.books[event.buyExchange], 'BUY', target).averageExecutionPrice!;
+    const sellPrice = simulateExecution(input.books[event.sellExchange], 'SELL', target).averageExecutionPrice!;
     const rate = (ex: 'bybit' | 'okx') => assessment.feeSourceByExchange[ex] === 'ACCOUNT_OBSERVED'
       ? input.accounts[ex].fee!.takerFeeRate.normalizedCostRate : FEES[ex].takerRate;
     const a: ShadowExecutionAttempt = {
+      configuredTargetBtc: event.targetBaseSize, ruleAdjustedTargetBtc: target,
+      ruleFreshAtTrigger: rules.status === 'EXECUTABLE', ruleAssessment: structuredClone(rules),
       id: this.id(), opportunityEventId: event.id, triggeredAt: at, closedAt: null,
-      buyExchange: event.buyExchange, sellExchange: event.sellExchange, targetBtcSize: event.targetBaseSize,
-      buy: this.leg(event.buyExchange, 'BUY', event.targetBaseSize, at, this.config.buyOrderLatencyMs),
-      sell: this.leg(event.sellExchange, 'SELL', event.targetBaseSize, at, this.config.sellOrderLatencyMs), unwind: null,
+      buyExchange: event.buyExchange, sellExchange: event.sellExchange, targetBtcSize: target,
+      buy: this.leg(event.buyExchange, 'BUY', target, at, this.config.buyOrderLatencyMs),
+      sell: this.leg(event.sellExchange, 'SELL', target, at, this.config.sellOrderLatencyMs), unwind: null,
       state: 'WAITING_ARRIVAL', outcome: null, entryOutcome: null, residualBtc: 0, unhedgedStartedAt: null, unhedgedDurationMs: 0,
       feeSources: Object.freeze({ ...assessment.feeSourceByExchange }), feeRates: Object.freeze({ bybit: rate('bybit'), okx: rate('okx') }),
       fundingAssessment: { status: d.fundingStatus, reasons: [...d.fundingReasons] },
-      degraded: assessment.degraded, reasons: [...assessment.reasons], triggerBuyPrice: buyPrice, triggerSellPrice: sellPrice,
+      degraded: assessment.degraded || rules.status !== 'EXECUTABLE',
+      reasons: [...assessment.reasons, ...(rules.status === 'UNKNOWN' ? ['RULE_SOURCE_UNAVAILABLE'] : [])], triggerBuyPrice: buyPrice, triggerSellPrice: sellPrice,
       triggerShadowNetPnl: d.shadowNetPnl, buyPriceDriftBps: null, sellPriceDriftBps: null,
       grossPnl: null, buyFee: 0, sellFee: 0, unwindFee: 0, unwindNotional: 0, unwindRealizedPnl: 0,
       netPnlAfterFees: null, unallocatedEntryFees: 0, feasibility: 'UNCERTAIN', fills: [], fillCount: 0,
@@ -209,7 +220,7 @@ export class ShadowExecutionEngine {
     this.stopped = true;
   }
   getAttempts() { return structuredClone([...this.recent, ...this.active.values()]); }
-  getMetrics() { return this.metrics.summary(); }
+  getMetrics() { return { ...this.metrics.summary(), ruleCalibration: this.ruleMetrics.summary() }; }
   getHealth() { return { enabled: this.enabled, activeAttempts: this.active.size, lastTriggeredAt: this.lastTriggeredAt,
     lastTerminalAt: this.lastTerminalAt, capacityHealthy: this.active.size < this.maxActive }; }
 }

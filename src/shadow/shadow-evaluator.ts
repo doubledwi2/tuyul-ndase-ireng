@@ -1,4 +1,5 @@
 import { FEES, type FeeConfig } from '../config/fees.js';
+import { assessCrossVenueRules, EMPTY_RULES } from '../instrument-rules/validator.js';
 import { TARGET_BTC_SIZE } from '../config/simulation.js';
 import { TIMING_CONFIG } from '../config/timing.js';
 import { MAX_BALANCE_AGE_MS, MAX_DIAGNOSTIC_AGE_MS } from '../private-read/config.js';
@@ -47,6 +48,19 @@ export function evaluateShadow(input: ShadowInput, target = TARGET_BTC_SIZE, bas
   if (!booksValid) result.reasons.push('BOOK_UNAVAILABLE_OR_STALE');
   if (!healthy) result.reasons.push('SYNC_NOT_HEALTHY');
   function direction(buy: Exchange, sell: Exchange): ShadowDirection {
+    let ruleCalibratedNetPnl: number | null = null;
+    let ruleCalibratedBuyNotional: number | null = null, ruleCalibratedSellNotional: number | null = null;
+    const ruleAssessment = assessCrossVenueRules(target, input.instrumentRules ?? EMPTY_RULES, at, quantity => {
+      if (!healthy) return { bybit: null, okx: null };
+      const rb = simulateExecution(input.books[buy], 'BUY', quantity), rs = simulateExecution(input.books[sell], 'SELL', quantity);
+      ruleCalibratedBuyNotional = rb.fullyFilled && Number.isFinite(rb.notional) ? rb.notional : null;
+      ruleCalibratedSellNotional = rs.fullyFilled && Number.isFinite(rs.notional) ? rs.notional : null;
+      const net = rs.notional * (1 - rates[sell]) - rb.notional * (1 + rates[buy]);
+      if (ruleCalibratedBuyNotional !== null && ruleCalibratedSellNotional !== null && Number.isFinite(net)) ruleCalibratedNetPnl = net;
+      return buy === 'bybit' ? { bybit: ruleCalibratedBuyNotional, okx: ruleCalibratedSellNotional }
+        : { bybit: ruleCalibratedSellNotional, okx: ruleCalibratedBuyNotional };
+    });
+    if (ruleAssessment.status !== 'EXECUTABLE') ruleCalibratedNetPnl = null;
     const b = booksValid ? simulateExecution(input.books[buy], 'BUY', target) : null;
     const s = booksValid ? simulateExecution(input.books[sell], 'SELL', target) : null;
     const complete = !!b?.fullyFilled && !!s?.fullyFilled;
@@ -77,7 +91,8 @@ export function evaluateShadow(input: ShadowInput, target = TARGET_BTC_SIZE, bas
     // Balance uncertainty is kept primary; all compatibility blockers remain visible.
     const primary = (['STALE_BALANCE', 'UNKNOWN_AVAILABLE_BALANCE', 'ACCOUNT_INCOMPATIBLE', 'ACCOUNT_COMPATIBILITY_UNKNOWN', 'INSUFFICIENT_FUNDS'] as const)
       .find(reason => reasons.includes(reason)) ?? 'FUNDED';
-    return { buyExchange: buy, sellExchange: sell, fundingStatus: primary, fundingReasons: reasons,
+    return { ruleAssessment, ruleCalibratedNetPnl, ruleCalibratedBuyNotional, ruleCalibratedSellNotional,
+      buyExchange: buy, sellExchange: sell, fundingStatus: primary, fundingReasons: reasons,
       economicsStatus: !finite || !healthy ? 'SHADOW_UNCERTAIN' : shadowNetPnl > 0 ? 'SHADOW_POSITIVE' : 'SHADOW_ZERO_OR_NEGATIVE',
       baselineNetPnl: finite ? baselineNetPnl : null, shadowNetPnl: finite ? shadowNetPnl : null,
       baselineNetSpread: finite && b ? baselineNetPnl / b.notional * 100 : null,

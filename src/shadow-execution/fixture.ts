@@ -2,10 +2,12 @@ import { MarketPipeline } from '../app/pipeline.js';
 import { TIMING_CONFIG } from '../config/timing.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import { shadowFixture } from '../shadow/fixture.js';
+import { ruleFixture } from '../instrument-rules/fixture.js';
 
 // Synthetic accounts and real fresh-pair lifecycle; never an external account.
 export function executionFixture(at = 1_700_000_000_000) {
   const input = shadowFixture(0.001, 103, at);
+  input.instrumentRules = { bybit: ruleFixture('bybit', at), okx: ruleFixture('okx', at) };
   const events: OpportunityEvent[] = [];
   const pipeline = new MarketPipeline({ timingConfig: { ...TIMING_CONFIG, minOffsetSamples: 1 },
     qualityConfig: { minActiveDurationMs: 0, minNetPnlUsdt: 0.001, minNetSpreadPercent: 0, maxSyncDiffMsForQualified: 100 },

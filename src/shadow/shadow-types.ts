@@ -2,6 +2,7 @@ import type { AccountCompatibilityAssessment, AccountFeeSnapshot, CredentialSafe
 import type { Exchange, PrivateAccountSnapshot } from '../private-read/types.js';
 import type { NormalizedOrderBook } from '../types/orderbook.js';
 import type { SyncAssessment } from '../timing/sync-model.js';
+import type { RuleSnapshots, CrossVenueRuleAssessment } from '../instrument-rules/types.js';
 
 export type FundingStatus = 'FUNDED' | 'INSUFFICIENT_FUNDS' | 'UNKNOWN_AVAILABLE_BALANCE' |
   'STALE_BALANCE' | 'ACCOUNT_INCOMPATIBLE' | 'ACCOUNT_COMPATIBILITY_UNKNOWN';
@@ -18,6 +19,7 @@ export interface ShadowVenueInput {
 }
 export type ShadowAccountState = Readonly<Record<Exchange, ShadowVenueInput>>;
 export interface ShadowInput {
+  readonly instrumentRules?: RuleSnapshots;
   readonly evaluatedAt: number;
   readonly books: Readonly<Record<Exchange, NormalizedOrderBook>>;
   readonly sync: SyncAssessment;
@@ -25,6 +27,10 @@ export interface ShadowInput {
 }
 export interface ShadowFreshness { balance: boolean; fee: boolean; config: boolean; permission: boolean }
 export interface ShadowDirection {
+  ruleAssessment: CrossVenueRuleAssessment;
+  ruleCalibratedNetPnl: number | null;
+  ruleCalibratedBuyNotional: number | null;
+  ruleCalibratedSellNotional: number | null;
   buyExchange: Exchange; sellExchange: Exchange;
   economicsStatus: 'SHADOW_POSITIVE' | 'SHADOW_ZERO_OR_NEGATIVE' | 'SHADOW_UNCERTAIN';
   fundingStatus: FundingStatus;

@@ -1,10 +1,20 @@
 # tuyul-ndase-ireng
 
-Shadow Execution Feasibility v0.5.3 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Exchange Instrument Rule Calibration v0.5.4 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
 Aplikasi mendukung authenticated private **READ ONLY**, opt-in: balance BTC/USDT, permission inspection, account config, dan observed spot fee. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance/config/fee tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
 
-### Phase 5.3 shadow execution feasibility
+### Phase 5.4 public instrument rules
+
+Public GET metadata Bybit/OKX BTC/USDT, tanpa credential, aktif default (`INSTRUMENT_RULES_ENABLED=true`). Startup asynchronous, polling 300000 ms (env interval 30000–900000 ms), cache maksimum 900000 ms. Kegagalan metadata tidak menghentikan scanner/paper. `npm run build && npm run rules:check -- --refresh` memeriksa fetch dan refresh kedua venue; tanpa books, notional assessment tetap UNKNOWN.
+
+Quantity dibulatkan turun dengan decimal/BigInt; common quantity memakai LCM kedua step, bukan rounding independen. Shadow current mempertahankan economics configured target dan menambahkan rule assessment serta re-simulated economics common target. Shadow execution memakai common target hanya saat EXECUTABLE; UNKNOWN meneruskan configured target dengan `RULE_SOURCE_UNAVAILABLE`, invalid ditolak. Target dibekukan saat trigger. Paper Phase 3 tidak berubah.
+
+OKX `maxMktSz` Spot berdimensi USDT, sedangkan `maxMktAmt` berdimensi USD. USD cap disimpan terpisah; tanpa conversion source assessment UNKNOWN (`USD_CONVERSION_UNAVAILABLE`), bukan asumsi USD=USDT. Bybit min quantity lama deprecated; batas minimum aktif adalah minOrderAmt. Detail model, keterbatasan, dan sumber resmi: [INSTRUMENT_RULES.md](docs/INSTRUMENT_RULES.md).
+
+Exchange-rule-valid hypothetical order != accepted real order. Dynamic risk controls, account state, rate limits, maintenance, price protection, perubahan rules, dan kondisi runtime lain masih dapat menyebabkan penolakan exchange. Tidak ada real execution atau request exchange write.
+
+### Phase 5.3 shadow execution feasibility (complete)
 
 `SHADOW_EXECUTION_ENABLED=false` default; true wajib `SHADOW_MODE_ENABLED=true` dan `PRIVATE_READ_ENABLED=true`. Layer hypothetical execution terpisah hanya menerima fresh-pair QUALIFIED event, satu attempt per event dalam bounded retention. Fee/funding dibekukan dari cache saat trigger; tidak ada REST per opportunity, reserve saldo aktual, atau perubahan paper fee.
 
@@ -604,8 +614,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 5.1 read-only account reconciliation and fee diagnostics: complete.
 - Phase 5.2 real-account shadow observation: complete. Bukan real orders.
 - Phase 5.2.1 fresh-pair qualification integrity: complete.
-- Phase 5.3 shadow latency and execution feasibility: current. Hypothetical only.
+- Phase 5.3 shadow latency and execution feasibility: complete. Hypothetical only.
+- Phase 5.4 exchange instrument rules and executability calibration: current. Public metadata only.
 
-## Scope Phase 5.3
+## Scope Phase 5.4
 
-Scope versi ini menambahkan hypothetical post-arrival execution feasibility di atas cache-only shadow economics: latency, partial/leg risk, fresh-book unwind, fee/funding freeze, dan bounded metrics. Tetap tujuh typed authenticated GET reads Phase 5.1. Tidak ada observed fee injection ke paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan dua typed public GET instrument metadata, exact decimal/common sizing, dan shadow rule-calibration diagnostics. Tetap tujuh typed authenticated GET reads Phase 5.1, terpisah dan opt-in. Tidak ada perubahan sizing/fee paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
