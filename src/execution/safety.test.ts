@@ -23,7 +23,7 @@ test('default safety is paper; only private read capability is available', () =>
   }
 });
 test('real enable, unknown modes and malformed booleans fail closed', () => {
-  assert.throws(() => parseExecutionSafety({ REAL_EXECUTION_ENABLED: 'true' }), /Real execution is not implemented\/enabled in Phase 5.2\./);
+  assert.throws(() => parseExecutionSafety({ REAL_EXECUTION_ENABLED: 'true' }), /Real execution is not implemented\/enabled in Phase 5.3\./);
   for (const mode of ['real', 'live', 'disabled-live', '', 'PAPER']) assert.throws(() => parseExecutionSafety({ EXECUTION_MODE: mode }));
   for (const value of ['', '1', 'FALSE', 'yes']) assert.throws(() => parseExecutionSafety({ EXECUTION_KILL_SWITCH: value }));
   assert.equal(parseExecutionSafety({ EXECUTION_KILL_SWITCH: 'false' }).realExecutionEnabled, false);
@@ -65,7 +65,7 @@ test('paper startup refuses real mode before network or runtime lock', async () 
     }), (error: unknown) => {
       const failure = error as { code: number; stdout: string; stderr: string };
       assert.equal(failure.code, 1);
-      assert.match(failure.stderr, /Phase 5.2/);
+      assert.match(failure.stderr, /Phase 5.3/);
       assert.doesNotMatch(failure.stdout, /connected|recovery_empty|runtime_started/);
       return true;
     });

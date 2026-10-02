@@ -5,6 +5,7 @@ import { PrivateAccountCollector } from './private-read/collector.js';
 import { compareInventory, reconcileAccount } from './private-read/inventory.js';
 import { ShadowRuntime } from './shadow/shadow-runtime.js';
 import { shadowInput } from './app/shadow-input.js';
+import { ShadowExecutionRuntime } from './shadow-execution/shadow-execution-runtime.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { DATA_DIR, HEALTH_HOST, HEALTH_PORT, LOG_FORMAT, operationalConfigSnapshot } from './config/runtime.js';
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
   const safety = await loadExecutionBoundary();
   const privateSetup = await createPrivateReadClients();
   const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
+  const shadowExecution = new ShadowExecutionRuntime(process.env.SHADOW_EXECUTION_ENABLED === 'true');
   const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
     (exchange, error, kind) => logger.warn('private_read_failed', 'Private account polling failed; paper remains independent.',
       { exchange, kind, status: error.status, category: error.category }), Date.now,
@@ -162,13 +164,15 @@ async function main(): Promise<void> {
       const snapshot = pipeline.getLatestDepthSnapshot();
       if (snapshot !== null) {
         paperCoordinator.processOpportunity(event, snapshot, event.updatedAt);
+        shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt));
       }
     },
   });
 
   const getHealth = () => {
     if (durableStore !== null) updatePersistenceHealth(durableStore.getHealth());
-    return { ...operational.getHealth(paperEngine.getRiskSummary()), privateRead: privateCollector.getHealth(), shadow: shadow.getHealth(Date.now()) };
+    return { ...operational.getHealth(paperEngine.getRiskSummary()), privateRead: privateCollector.getHealth(),
+      shadow: shadow.getHealth(Date.now()), shadowCurrent: shadow.getHealth(Date.now()), shadowExecution: shadowExecution.getHealth() };
   };
   const getMetrics = (includeInventory = false): Record<string, unknown> => {
     const health = getHealth();
@@ -185,6 +189,7 @@ async function main(): Promise<void> {
     return { ...health, process: resources?.snapshot(),
       privateReadMetrics: privateCollector.getMetrics(),
       ...(shadow.enabled ? { shadowMetrics: shadow.getMetrics() } : {}),
+      ...(shadowExecution.enabled ? { shadowExecutionMetrics: shadowExecution.getMetrics() } : {}),
       ...(privateSetup.enabled ? { feeModel: privateCollector.getFeeDiagnostic() } : {}),
       ...(includeInventory && privateSetup.enabled ? { accountSafety: privateCollector.getSafetySummary(reconciliation) } : {}),
       ...(includeInventory ? { inventoryObservation: compareInventory(privateCollector.getInventory(), paperEngine.getBalances()) } : {}),
@@ -219,6 +224,8 @@ async function main(): Promise<void> {
       return;
     }
     const timestamp = Date.now();
+    // Progress existing attempts first; this input cannot fill an attempt it triggers.
+    shadowExecution.onBook(orderBook, timestamp);
     operational.observeBook(orderBook.exchange, timestamp);
     const clockHealth = clockHealthMonitor.sample(
       orderBook.receivedTimestamp,
@@ -267,6 +274,8 @@ async function main(): Promise<void> {
   }, OUTPUT_INTERVAL_MS);
 
   const metricsTimer = setInterval(() => {
+    if (shadowExecution.enabled) logger.info('shadow_execution_summary', '[SHADOW EXECUTION] Hypothetical modeled fills only.',
+      { ...shadowExecution.getHealth(), ...shadowExecution.getMetrics() });
     if (shadow.enabled) logger.info('shadow_summary', '[SHADOW] Hypothetical current-book economics only.', { ...shadow.getHealth(Date.now()), ...shadow.getMetrics() });
     logger.info('operational_summary', 'Periodic operational health.', getMetrics());
     resources?.reset();
@@ -281,6 +290,7 @@ async function main(): Promise<void> {
     printPaperRiskSummary(paperEngine.getRiskSummary());
   }, METRICS_INTERVAL_MS);
   let checkingDisk = false;
+  const shadowExecutionTimer = shadowExecution.enabled ? setInterval(() => shadowExecution.tick(Date.now()), 50) : undefined;
   const heartbeatTimer = setInterval(() => {
     getHealth();
     if (checkingDisk) return;
@@ -302,6 +312,8 @@ async function main(): Promise<void> {
     clearInterval(outputTimer);
     clearInterval(metricsTimer);
     clearInterval(heartbeatTimer);
+    clearInterval(shadowExecutionTimer);
+    shadowExecution.shutdown(Date.now());
     for (const connection of connections) {
       connection.close();
     }

@@ -5,6 +5,7 @@ import { createPrivateReadClients } from './private-read/startup.js';
 import { PrivateAccountCollector } from './private-read/collector.js';
 import { ShadowRuntime } from './shadow/shadow-runtime.js';
 import { shadowInput } from './app/shadow-input.js';
+import { ShadowExecutionRuntime } from './shadow-execution/shadow-execution-runtime.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { CLOCK_JUMP_THRESHOLD_MS } from './config/timing.js';
@@ -29,6 +30,7 @@ import { ClockHealthMonitor } from './timing/clock-health.js';
 const safety = await loadExecutionBoundary();
 const privateSetup = await createPrivateReadClients();
 const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
+const shadowExecution = new ShadowExecutionRuntime(process.env.SHADOW_EXECUTION_ENABLED === 'true');
 const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
   (exchange, error, kind) => new Logger('private-read').warn('private_read_failed', 'Private account polling failed.',
     { exchange, kind, status: error.status, category: error.category }), Date.now,
@@ -43,7 +45,11 @@ const orderBookRecorder = new OrderBookRecorder();
 const clockHealthMonitor = new ClockHealthMonitor(CLOCK_JUMP_THRESHOLD_MS);
 const pipeline = new MarketPipeline({
   eventRecorder,
-  onEvent: printOpportunityEvent,
+  onEvent: event => {
+    printOpportunityEvent(event);
+    const snapshot = pipeline.getLatestDepthSnapshot();
+    if (snapshot) shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt));
+  },
   monotonicNow: () => performance.now(),
 });
 
@@ -54,6 +60,7 @@ function receiveOrderBook(orderBook: NormalizedOrderBook): void {
   }
 
   const recordedAt = Date.now();
+  shadowExecution.onBook(orderBook, recordedAt);
   const clockHealth = clockHealthMonitor.sample(
     orderBook.receivedTimestamp,
     orderBook.receivedMonotonicMs ?? performance.now(),
@@ -90,6 +97,8 @@ const outputTimer = setInterval(() => {
 }, OUTPUT_INTERVAL_MS);
 
 const metricsTimer = setInterval(() => {
+  if (shadowExecution.enabled) new Logger('shadow-execution').info('shadow_execution_summary', '[SHADOW EXECUTION] Hypothetical modeled fills only.',
+    { ...shadowExecution.getHealth(), ...shadowExecution.getMetrics() });
   if (shadow.enabled) new Logger('shadow').info('shadow_summary', '[SHADOW] Hypothetical current-book economics only.', { ...shadow.getHealth(Date.now()), ...shadow.getMetrics() });
   printMetricsSummary(pipeline.getMetricsSummary());
   new Logger('private-read').info('private_read_summary', 'Private read diagnostics (no balances).',
@@ -98,6 +107,7 @@ const metricsTimer = setInterval(() => {
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
+const shadowExecutionTimer = shadowExecution.enabled ? setInterval(() => shadowExecution.tick(Date.now()), 50) : undefined;
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) {
@@ -108,6 +118,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   console.log(`\nReceived ${signal}; closing WebSocket connections...`);
   clearInterval(outputTimer);
   clearInterval(metricsTimer);
+  clearInterval(shadowExecutionTimer);
+  shadowExecution.shutdown(Date.now());
   for (const connection of connections) {
     connection.close();
   }

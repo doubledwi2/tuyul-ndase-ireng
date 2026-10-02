@@ -1,8 +1,16 @@
 # tuyul-ndase-ireng
 
-Real-Account Shadow Mode v0.5.2 dengan correctness patch Phase 5.2.1 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Shadow Execution Feasibility v0.5.3 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
 Aplikasi mendukung authenticated private **READ ONLY**, opt-in: balance BTC/USDT, permission inspection, account config, dan observed spot fee. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance/config/fee tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
+
+### Phase 5.3 shadow execution feasibility
+
+`SHADOW_EXECUTION_ENABLED=false` default; true wajib `SHADOW_MODE_ENABLED=true` dan `PRIVATE_READ_ENABLED=true`. Layer hypothetical execution terpisah hanya menerima fresh-pair QUALIFIED event, satu attempt per event dalam bounded retention. Fee/funding dibekukan dari cache saat trigger; tidak ada REST per opportunity, reserve saldo aktual, atau perubahan paper fee.
+
+Latency model BUY/SELL/UNWIND 50 ms, deadline 250 ms, dan unhedged timer 200 ms berasal dari shared Phase 3 config—bukan latency exchange terukur. Fill hanya memakai update venue yang baru diproses setelah arrival, termasuk unwind; input sebelum arrival tidak dipakai. Partial/one-leg residual, unwind, dan PnL quantity yang benar-benar tertutup tetap eksplisit. Concurrent attempts mengamati liquidity secara independen, sebuah asumsi optimistis. Shadow current-book Phase 5.2 tetap berjalan setiap depth snapshot.
+
+Maksimum 100 active dan 10000 recent terminal attempts; metrics bounded. Shutdown menandai attempt aktif ABORTED_SHUTDOWN tanpa fill palsu; tidak ada persistence/recovery shadow. Clean shadow fill != real fill probability. Positive simulated PnL != guaranteed profit. No private trading capability exists. Detail: [SHADOW_EXECUTION.md](docs/SHADOW_EXECUTION.md).
 
 ### Phase 5.2.1 fresh-pair qualification
 
@@ -595,8 +603,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 5.0 authenticated private read-only account integration: complete.
 - Phase 5.1 read-only account reconciliation and fee diagnostics: complete.
 - Phase 5.2 real-account shadow observation: complete. Bukan real orders.
-- Phase 5.2.1 fresh-pair qualification integrity: current. Phase 5.3 belum diimplementasikan.
+- Phase 5.2.1 fresh-pair qualification integrity: complete.
+- Phase 5.3 shadow latency and execution feasibility: current. Hypothetical only.
 
-## Scope Phase 5.2
+## Scope Phase 5.3
 
-Scope versi ini menambahkan cache-only shadow economics, funding uncertainty, baseline-vs-shadow fee flips, bounded metrics, dan fixture deterministik di atas tujuh typed authenticated GET reads Phase 5.1. Tidak ada observed fee injection ke paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan hypothetical post-arrival execution feasibility di atas cache-only shadow economics: latency, partial/leg risk, fresh-book unwind, fee/funding freeze, dan bounded metrics. Tetap tujuh typed authenticated GET reads Phase 5.1. Tidak ada observed fee injection ke paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.

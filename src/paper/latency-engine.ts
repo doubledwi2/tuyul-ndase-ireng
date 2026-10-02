@@ -14,6 +14,7 @@ import {
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import type { OpportunityQualification } from '../scanner/opportunity-filter.js';
 import { simulateExecution } from '../scanner/execution-simulator.js';
+import { eligibleOrderBook } from '../scanner/order-timing.js';
 import type { SyncAssessment } from '../timing/sync-model.js';
 import {
   PaperRiskManager,
@@ -473,9 +474,7 @@ export class LatencyPaperTradingEngine {
     for (const order of this.orders.values()) {
       if (
         terminal(order) ||
-        order.exchange !== book.exchange ||
-        logicalTimestamp < order.arrivalAt ||
-        logicalTimestamp > order.deadlineAt
+        !eligibleOrderBook(order, book.exchange, logicalTimestamp)
       ) {
         continue;
       }

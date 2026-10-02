@@ -63,7 +63,7 @@ Counters per **evaluation** (two directions): shadowEvaluations, fundedBothDirec
 
 Distributions retain at most 2048 directional samples: shadowNetPnl avg/P50/P95/P99/max and feeImpactUsdt avg/P50/P95/P99/max. Nearest-rank percentiles; null for no samples. Lifetime counters are separate from window samples. Finite current-book numeric estimates may be included when synchronization marks economics uncertain; these distributions are diagnostic, not executable outcomes.
 
-Stop at Phase 5.2. No real execution or automatic paper fee calibration.
+Phase 5.2 current-book observation remains independent. Phase 5.3 adds a separate opt-in [post-arrival execution observer](SHADOW_EXECUTION.md) triggered only by fresh-pair QUALIFIED events. It does not change this evaluator's per-depth-snapshot semantics. No real execution or automatic paper fee calibration.
 
 ## Validation (2026-10-01)
 
