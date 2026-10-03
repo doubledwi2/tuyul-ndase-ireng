@@ -7,6 +7,8 @@ import { compareInventory, reconcileAccount } from './private-read/inventory.js'
 import { ShadowRuntime } from './shadow/shadow-runtime.js';
 import { shadowInput } from './app/shadow-input.js';
 import { ShadowExecutionRuntime } from './shadow-execution/shadow-execution-runtime.js';
+import { ShadowEvidenceRuntime } from './shadow-evidence/runtime.js';
+import { evidenceConfig } from './shadow-evidence/config.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { DATA_DIR, HEALTH_HOST, HEALTH_PORT, LOG_FORMAT, operationalConfigSnapshot } from './config/runtime.js';
@@ -51,6 +53,7 @@ const OUTPUT_INTERVAL_MS = 500;
 const METRICS_INTERVAL_MS = 60_000;
 let runtimeLock: Awaited<ReturnType<typeof acquireRuntimeLock>> | null = null;
 let resources: ResourceMonitor | null = null;
+let evidenceRuntime: ShadowEvidenceRuntime | null = null;
 
 async function main(): Promise<void> {
   const logger = new Logger('paper-runtime');
@@ -59,6 +62,7 @@ async function main(): Promise<void> {
   const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
   const instrumentRules = new InstrumentRulesCollector();
   const shadowExecution = new ShadowExecutionRuntime(process.env.SHADOW_EXECUTION_ENABLED === 'true');
+  const evidenceOptions = evidenceConfig();
   const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
     (exchange, error, kind) => logger.warn('private_read_failed', 'Private account polling failed; paper remains independent.',
       { exchange, kind, status: error.status, category: error.category }), Date.now,
@@ -66,6 +70,8 @@ async function main(): Promise<void> {
   logger.info('execution_safety', `Execution mode: PAPER; Real execution: DISABLED; Kill switch: ${safety.executionKillSwitch ? 'ENABLED' : 'DISABLED'}; Private Bybit credentials configured: ${safety.bybitPrivateCredentialsConfigured ? 'yes' : 'no'}; Private OKX credentials configured: ${safety.okxPrivateCredentialsConfigured ? 'yes' : 'no'}.`, safety);
   logger.info('effective_config', 'Effective operational config (allowlisted).', { ...operationalConfigSnapshot(), ...safety, privateReadEnabled: privateSetup.enabled });
   runtimeLock = await acquireRuntimeLock(DATA_DIR);
+  const shadowEvidence = await ShadowEvidenceRuntime.create(DATA_DIR, evidenceOptions);
+  evidenceRuntime = shadowEvidence;
   resources = new ResourceMonitor();
   let diskBytes: number | null = await freeDiskBytes(DATA_DIR);
   if (diskBytes === null) logger.warn('disk_unavailable', 'Filesystem free-space diagnostic unsupported.');
@@ -167,6 +173,7 @@ async function main(): Promise<void> {
       if (snapshot !== null) {
         paperCoordinator.processOpportunity(event, snapshot, event.updatedAt);
         shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt, instrumentRules));
+        shadowEvidence.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt, instrumentRules));
       }
     },
   });
@@ -174,7 +181,7 @@ async function main(): Promise<void> {
   const getHealth = () => {
     if (durableStore !== null) updatePersistenceHealth(durableStore.getHealth());
     return { ...operational.getHealth(paperEngine.getRiskSummary()), privateRead: privateCollector.getHealth(), instrumentRules: instrumentRules.getHealth(),
-      shadow: shadow.getHealth(Date.now()), shadowCurrent: shadow.getHealth(Date.now()), shadowExecution: shadowExecution.getHealth() };
+      shadow: shadow.getHealth(Date.now()), shadowCurrent: shadow.getHealth(Date.now()), shadowExecution: shadowExecution.getHealth(), shadowEvidence: shadowEvidence.getHealth() };
   };
   const getMetrics = (includeInventory = false): Record<string, unknown> => {
     const health = getHealth();
@@ -191,6 +198,7 @@ async function main(): Promise<void> {
     return { ...health, process: resources?.snapshot(),
       privateReadMetrics: privateCollector.getMetrics(),
       instrumentRulesMetrics: instrumentRules.getMetrics(),
+      ...(shadowEvidence.enabled ? { shadowEvidenceMetrics: shadowEvidence.summary() } : {}),
       ...(shadow.enabled ? { shadowMetrics: shadow.getMetrics() } : {}),
       ...(shadowExecution.enabled ? { shadowExecutionMetrics: shadowExecution.getMetrics() } : {}),
       ...(privateSetup.enabled ? { feeModel: privateCollector.getFeeDiagnostic() } : {}),
@@ -219,6 +227,7 @@ async function main(): Promise<void> {
   logger.info('runtime_started', 'Durable virtual paper engine started.', { healthPort: healthAddress.port });
 
   function receiveOrderBook(orderBook: NormalizedOrderBook): void {
+    if (shuttingDown) return;
     if (!isValidNormalizedOrderBook(orderBook)) {
       logger.warn(
         'invalid_order_book',
@@ -230,6 +239,7 @@ async function main(): Promise<void> {
     const timestamp = Date.now();
     // Progress existing attempts first; this input cannot fill an attempt it triggers.
     shadowExecution.onBook(orderBook, timestamp);
+    shadowEvidence.onBook(orderBook, timestamp);
     operational.observeBook(orderBook.exchange, timestamp);
     const clockHealth = clockHealthMonitor.sample(
       orderBook.receivedTimestamp,
@@ -294,7 +304,7 @@ async function main(): Promise<void> {
     printPaperRiskSummary(paperEngine.getRiskSummary());
   }, METRICS_INTERVAL_MS);
   let checkingDisk = false;
-  const shadowExecutionTimer = shadowExecution.enabled ? setInterval(() => shadowExecution.tick(Date.now()), 50) : undefined;
+  const shadowExecutionTimer = shadowExecution.enabled ? setInterval(() => { const at = Date.now(); shadowExecution.tick(at); shadowEvidence.tick(at); }, 50) : undefined;
   const heartbeatTimer = setInterval(() => {
     getHealth();
     if (checkingDisk) return;
@@ -321,6 +331,7 @@ async function main(): Promise<void> {
     for (const connection of connections) {
       connection.close();
     }
+    await shadowEvidence.shutdown(Date.now());
     await privateCollector.stop();
     await instrumentRules.stop();
     await pipeline.flush();
@@ -369,6 +380,7 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (error: unknown) => {
+  await evidenceRuntime?.shutdown(Date.now());
   resources?.close();
   await runtimeLock?.release();
   const message = error instanceof Error ? error.message : String(error);

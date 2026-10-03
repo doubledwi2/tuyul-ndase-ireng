@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { RuleCalibrationMetrics } from '../instrument-rules/metrics.js';
-import { FEES } from '../config/fees.js';
 import { MAX_PAPER_TRIGGER_AGE_MS, PAPER_BALANCE_EPSILON as EPS, PAPER_EXECUTION_CONFIG,
   validatePaperExecutionConfig, type PaperExecutionConfig } from '../config/paper.js';
 import type { OpportunityEvent } from '../scanner/opportunity.js';
 import { simulateExecution } from '../scanner/execution-simulator.js';
 import { eligibleOrderBook } from '../scanner/order-timing.js';
-import { evaluateShadow } from '../shadow/shadow-evaluator.js';
+import { prepareShadowTrigger, type PreparedShadowTrigger } from './prepared-trigger.js';
 import type { ShadowInput } from '../shadow/shadow-types.js';
 import { isValidNormalizedOrderBook, type NormalizedOrderBook } from '../types/orderbook.js';
 import { ShadowExecutionMetrics } from './shadow-execution-metrics.js';
@@ -18,6 +17,7 @@ export const MAX_ATTEMPT_DETAIL = 64;
 interface Options {
   enabled?: boolean; config?: PaperExecutionConfig; idGenerator?: () => string;
   maxActive?: number; maxRecent?: number;
+  onTerminal?: (attempt: ShadowExecutionAttempt) => void;
 }
 export class ShadowExecutionEngine {
   readonly enabled: boolean;
@@ -25,6 +25,7 @@ export class ShadowExecutionEngine {
   private readonly maxActive: number;
   private readonly maxRecent: number;
   private readonly id: () => string;
+  private readonly onTerminal: Options['onTerminal'];
   private readonly active = new Map<string, ShadowExecutionAttempt>();
   private readonly recent: ShadowExecutionAttempt[] = [];
   private readonly seen = new Set<string>();
@@ -48,6 +49,7 @@ export class ShadowExecutionEngine {
       if (!Number.isSafeInteger(n) || n < 1 || n > limit) throw new RangeError('Invalid shadow retention bound.');
     }
     this.id = options.idGenerator ?? randomUUID;
+    this.onTerminal = options.onTerminal;
   }
   private time(at: number) {
     if (!Number.isSafeInteger(at) || at < this.lastTime) throw new RangeError('Shadow logical time must be monotonic.');
@@ -58,10 +60,16 @@ export class ShadowExecutionEngine {
       filledBtc: 0, notional: 0, fee: 0, firstFillAt: null, firstEligibleBookDelayMs: null, done: false };
   }
   trigger(event: OpportunityEvent, input: ShadowInput): { accepted: boolean; reason: string | null; attempt: ShadowExecutionAttempt | null } {
+    return this.triggerRejection(event, input.evaluatedAt, input.sync.status) ?? this.activate(event, prepareShadowTrigger(event, input));
+  }
+  triggerPrepared(event: OpportunityEvent, prepared: PreparedShadowTrigger): { accepted: boolean; reason: string | null; attempt: ShadowExecutionAttempt | null } {
+    return this.triggerRejection(event, prepared.at, prepared.syncStatus) ?? this.activate(event, prepared);
+  }
+  private triggerRejection(event: OpportunityEvent, at: number, syncStatus: PreparedShadowTrigger['syncStatus']) {
     const reject = (reason: string) => ({ accepted: false, reason, attempt: null });
     if (!this.enabled || this.stopped) return reject('SHADOW_DISABLED');
-    const at = input.evaluatedAt; this.time(at);
-    if (event.state !== 'QUALIFIED' || input.sync.status !== 'SYNC_HEALTHY' || event.currentEstimatedNetPnlAbsolute <= 0 ||
+    this.time(at);
+    if (event.state !== 'QUALIFIED' || syncStatus !== 'SYNC_HEALTHY' || event.currentEstimatedNetPnlAbsolute <= 0 ||
       !Number.isFinite(event.currentEstimatedNetPnlAbsolute) || !Number.isFinite(event.updatedAt) ||
       at < event.updatedAt || at - event.updatedAt > MAX_PAPER_TRIGGER_AGE_MS ||
       event.buyExchange === event.sellExchange || event.symbol !== 'BTC/USDT') return reject('NOT_FRESH_QUALIFIED');
@@ -69,19 +77,15 @@ export class ShadowExecutionEngine {
       this.metrics.duplicateRejected++; return reject('DUPLICATE_OR_RETIRED_OPPORTUNITY');
     }
     if (this.active.size >= this.maxActive) { this.metrics.capacityRejected++; return reject('SHADOW_CAPACITY_LIMIT'); }
-    const originalAssessment = evaluateShadow(input, event.targetBaseSize);
-    const original = originalAssessment.directions.find(d => d.buyExchange === event.buyExchange)!;
-    const rules = original.ruleAssessment;
-    this.ruleMetrics.record(rules, original.shadowNetPnl, original.ruleCalibratedNetPnl);
+    return null;
+  }
+  private activate(event: OpportunityEvent, prepared: PreparedShadowTrigger) {
+    const reject = (reason: string) => ({ accepted: false, reason, attempt: null });
+    const at = prepared.at;
+    const { rules, target, assessment, d, buyPrice, sellPrice, rates } = prepared;
+    this.ruleMetrics.record(rules, prepared.originalNetPnl, prepared.postRuleNetPnl);
     if (rules.status === 'NOT_EXECUTABLE') return reject('NOT_EXECUTABLE_RULES');
-    const target = rules.status === 'EXECUTABLE' ? rules.commonQuantity! : event.targetBaseSize;
-    const assessment = target === event.targetBaseSize ? originalAssessment : evaluateShadow(input, target);
-    const d = assessment.directions.find(d => d.buyExchange === event.buyExchange)!;
     if (d.economicsStatus === 'SHADOW_UNCERTAIN' || d.shadowNetPnl === null) return reject('INVALID_TRIGGER_BOOKS');
-    const buyPrice = simulateExecution(input.books[event.buyExchange], 'BUY', target).averageExecutionPrice!;
-    const sellPrice = simulateExecution(input.books[event.sellExchange], 'SELL', target).averageExecutionPrice!;
-    const rate = (ex: 'bybit' | 'okx') => assessment.feeSourceByExchange[ex] === 'ACCOUNT_OBSERVED'
-      ? input.accounts[ex].fee!.takerFeeRate.normalizedCostRate : FEES[ex].takerRate;
     const a: ShadowExecutionAttempt = {
       configuredTargetBtc: event.targetBaseSize, ruleAdjustedTargetBtc: target,
       ruleFreshAtTrigger: rules.status === 'EXECUTABLE', ruleAssessment: structuredClone(rules),
@@ -90,7 +94,7 @@ export class ShadowExecutionEngine {
       buy: this.leg(event.buyExchange, 'BUY', target, at, this.config.buyOrderLatencyMs),
       sell: this.leg(event.sellExchange, 'SELL', target, at, this.config.sellOrderLatencyMs), unwind: null,
       state: 'WAITING_ARRIVAL', outcome: null, entryOutcome: null, residualBtc: 0, unhedgedStartedAt: null, unhedgedDurationMs: 0,
-      feeSources: Object.freeze({ ...assessment.feeSourceByExchange }), feeRates: Object.freeze({ bybit: rate('bybit'), okx: rate('okx') }),
+      feeSources: Object.freeze({ ...assessment.feeSourceByExchange }), feeRates: Object.freeze({ ...rates }),
       fundingAssessment: { status: d.fundingStatus, reasons: [...d.fundingReasons] },
       degraded: assessment.degraded || rules.status !== 'EXECUTABLE',
       reasons: [...assessment.reasons, ...(rules.status === 'UNKNOWN' ? ['RULE_SOURCE_UNAVAILABLE'] : [])], triggerBuyPrice: buyPrice, triggerSellPrice: sellPrice,
@@ -121,6 +125,8 @@ export class ShadowExecutionEngine {
     for (const a of [...this.active.values()]) this.refresh(a, at);
   }
   private fill(a: ShadowExecutionAttempt, leg: ShadowLeg, name: 'buy' | 'sell' | 'unwind', book: NormalizedOrderBook, at: number) {
+    // Diagnostic latency at/above TTL leaves no execution window.
+    if (leg.arrivalAt >= leg.deadlineAt) return;
     if (a.closedAt !== null || leg.done || !eligibleOrderBook(leg, book.exchange, at)) return;
     leg.firstEligibleBookDelayMs ??= at - leg.arrivalAt;
     const simulation = simulateExecution(book, leg.side, leg.requestedBtc - leg.filledBtc);
@@ -209,6 +215,7 @@ export class ShadowExecutionEngine {
       // Conservative watermark rejects old events after their explicit ID is pruned.
       this.retiredBefore = Math.max(this.retiredBefore, expired.triggeredAt);
     }
+    this.onTerminal?.(structuredClone(a));
   }
   shutdown(at: number): void {
     if (!this.enabled || this.stopped) return;

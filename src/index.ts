@@ -7,6 +7,8 @@ import { InstrumentRulesCollector } from './instrument-rules/collector.js';
 import { ShadowRuntime } from './shadow/shadow-runtime.js';
 import { shadowInput } from './app/shadow-input.js';
 import { ShadowExecutionRuntime } from './shadow-execution/shadow-execution-runtime.js';
+import { ShadowEvidenceRuntime } from './shadow-evidence/runtime.js';
+import { DATA_DIR } from './config/runtime.js';
 
 import { MarketPipeline } from './app/pipeline.js';
 import { CLOCK_JUMP_THRESHOLD_MS } from './config/timing.js';
@@ -32,6 +34,7 @@ const safety = await loadExecutionBoundary();
 const privateSetup = await createPrivateReadClients();
 const shadow = new ShadowRuntime(process.env.SHADOW_MODE_ENABLED === 'true');
 const shadowExecution = new ShadowExecutionRuntime(process.env.SHADOW_EXECUTION_ENABLED === 'true');
+const shadowEvidence = await ShadowEvidenceRuntime.create(DATA_DIR);
 const instrumentRules = new InstrumentRulesCollector();
 const privateCollector = new PrivateAccountCollector(privateSetup.enabled, privateSetup.clients,
   (exchange, error, kind) => new Logger('private-read').warn('private_read_failed', 'Private account polling failed.',
@@ -50,12 +53,16 @@ const pipeline = new MarketPipeline({
   onEvent: event => {
     printOpportunityEvent(event);
     const snapshot = pipeline.getLatestDepthSnapshot();
-    if (snapshot) shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt, instrumentRules));
+    if (snapshot) {
+      shadowExecution.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt, instrumentRules));
+      shadowEvidence.onOpportunity(event, () => shadowInput(snapshot, privateCollector, event.updatedAt, instrumentRules));
+    }
   },
   monotonicNow: () => performance.now(),
 });
 
 function receiveOrderBook(orderBook: NormalizedOrderBook): void {
+  if (shuttingDown) return;
   if (!isValidNormalizedOrderBook(orderBook)) {
     console.warn(`[MARKET] Invalid ${orderBook.exchange} order book ignored.`);
     return;
@@ -63,6 +70,7 @@ function receiveOrderBook(orderBook: NormalizedOrderBook): void {
 
   const recordedAt = Date.now();
   shadowExecution.onBook(orderBook, recordedAt);
+  shadowEvidence.onBook(orderBook, recordedAt);
   const clockHealth = clockHealthMonitor.sample(
     orderBook.receivedTimestamp,
     orderBook.receivedMonotonicMs ?? performance.now(),
@@ -100,6 +108,7 @@ const outputTimer = setInterval(() => {
 }, OUTPUT_INTERVAL_MS);
 
 const metricsTimer = setInterval(() => {
+  if (shadowEvidence.enabled) new Logger('shadow-evidence').info('shadow_evidence_summary', 'Observed shadow evidence, not trading approval.', shadowEvidence.summary());
   new Logger('instrument-rules').info('instrument_rules_summary', 'Public instrument metadata only.',
     { health: instrumentRules.getHealth(), metrics: instrumentRules.getMetrics() });
   if (shadowExecution.enabled) new Logger('shadow-execution').info('shadow_execution_summary', '[SHADOW EXECUTION] Hypothetical modeled fills only.',
@@ -112,7 +121,7 @@ const metricsTimer = setInterval(() => {
 }, METRICS_INTERVAL_MS);
 
 let shuttingDown = false;
-const shadowExecutionTimer = shadowExecution.enabled ? setInterval(() => shadowExecution.tick(Date.now()), 50) : undefined;
+const shadowExecutionTimer = shadowExecution.enabled ? setInterval(() => { const at = Date.now(); shadowExecution.tick(at); shadowEvidence.tick(at); }, 50) : undefined;
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) {
@@ -128,6 +137,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   for (const connection of connections) {
     connection.close();
   }
+  await shadowEvidence.shutdown(Date.now());
   await privateCollector.stop();
   await instrumentRules.stop();
 

@@ -9,6 +9,7 @@ data/*.jsonl
 data/**/*.jsonl
 data/state/
 data/backups/
+data/shadow-evidence/
 *.secret
 secrets/
 credentials/

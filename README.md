@@ -1,10 +1,25 @@
 # tuyul-ndase-ireng
 
-Exchange Instrument Rule Calibration v0.5.4 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
+Shadow Evidence & Latency Sensitivity v0.5.5 adalah bagian dari project real-time crypto arbitrage scanner. Aplikasi merekonstruksi multi-level order book BTC/USDT, menilai economics, timing health, dan kualitas candidate, lalu mensimulasikan order virtual yang mengalami latency, partial fill, timeout, leg mismatch, emergency unwind, serta crash recovery lokal.
 
 Aplikasi mendukung authenticated private **READ ONLY**, opt-in: balance BTC/USDT, permission inspection, account config, dan observed spot fee. Real execution tetap DISABLED: tidak ada real order, transfer, withdrawal, atau private trading WebSocket. Paper trading hanya mengubah saldo virtual lokal; state-nya dipersist ke checkpoint/journal. Real balance/config/fee tetap memory-only dan tidak memengaruhi paper decision. Istilah executable dan qualified tetap bukan jaminan real fill.
 
-### Phase 5.4 public instrument rules
+### Phase 5.5 shadow evidence dan latency sensitivity
+
+Fase ini mengumpulkan evidence, **bukan izin live trading**. `SHADOW_EVIDENCE_ENABLED=false` default; jika diaktifkan, existing private-read + shadow + shadow-execution tetap wajib. Profil default L25/L50/L100/L200 menerima satu shared frozen trigger dan stream book yang sama. L50 adalah baseline modeled, bukan latency terukur; paper config tidak berubah.
+
+Evidence terminal tersanitasi disimpan append-only per run dalam `data/shadow-evidence/<run-id>/`, tanpa saldo/account ID/raw private response. Restart membuat run baru, tidak memulihkan active shadow attempt. Queue, samples dan active attempts dibatasi; kegagalan recorder/capacity/diagnostic membuat completeness false. Retention default 30 hari untuk run selesai; run crash/unknown dipertahankan untuk review manual.
+
+```sh
+npm run build
+npm run replay:shadow-evidence -- --file fixtures/shadow-evidence/latency.jsonl
+npm run shadow:report -- --dir data/shadow-evidence
+SHADOW_SOAK_ITERATIONS=500 npm run soak:shadow
+```
+
+Replay/report offline tanpa network atau credential; fixture berlabel SYNTHETIC_ACCOUNT_CONTEXT. Report memisahkan konfigurasi berbeda, direction, rules, fee source, funding dan cohort. Istilah yang digunakan: observed shadow survival rate—bukan probabilitas real fill. Panduan VPS, schema, durability, privacy dan batasan: [SHADOW_EVIDENCE.md](docs/SHADOW_EVIDENCE.md).
+
+### Phase 5.4 public instrument rules (complete)
 
 Public GET metadata Bybit/OKX BTC/USDT, tanpa credential, aktif default (`INSTRUMENT_RULES_ENABLED=true`). Startup asynchronous, polling 300000 ms (env interval 30000–900000 ms), cache maksimum 900000 ms. Kegagalan metadata tidak menghentikan scanner/paper. `npm run build && npm run rules:check -- --refresh` memeriksa fetch dan refresh kedua venue; tanpa books, notional assessment tetap UNKNOWN.
 
@@ -615,8 +630,9 @@ File JavaScript hasil build berada di folder `dist/`.
 - Phase 5.2 real-account shadow observation: complete. Bukan real orders.
 - Phase 5.2.1 fresh-pair qualification integrity: complete.
 - Phase 5.3 shadow latency and execution feasibility: complete. Hypothetical only.
-- Phase 5.4 exchange instrument rules and executability calibration: current. Public metadata only.
+- Phase 5.4 exchange instrument rules and executability calibration: complete. Public metadata only.
+- Phase 5.5 long-run shadow evidence and latency sensitivity: current. Observation only.
 
-## Scope Phase 5.4
+## Scope Phase 5.5
 
-Scope versi ini menambahkan dua typed public GET instrument metadata, exact decimal/common sizing, dan shadow rule-calibration diagnostics. Tetap tujuh typed authenticated GET reads Phase 5.1, terpisah dan opt-in. Tidak ada perubahan sizing/fee paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
+Scope versi ini menambahkan passive latency scenarios, sanitized terminal evidence, bounded statistics, streaming offline analysis, dan deterministic replay/soak. Tidak ada endpoint exchange baru, perubahan sizing/fee paper engine, real order execution/cancel/amend, automatic transfer, withdrawal, private trading WebSocket, production execution client, database production, atau dashboard.
